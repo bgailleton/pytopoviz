@@ -49,8 +49,3 @@ ax.set_ylabel("Northing (km)")
 convert_ticks_to_km(ax)
 add_grid_crosses(ax)
 fig_obj.fig.show()
-
-workflow = tpz.workflow_from_fig2d(fig_obj)
-workflow.to_file("workflow_fig2d_t1.json")
-print("Workflow saved to workflow_fig2d_t1.json")
-print("Run with: pytopoviz-run workflow_fig2d_t1.json")

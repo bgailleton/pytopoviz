@@ -14,7 +14,6 @@ The software is still in alpha but under heavy development since November 2025.
   + conditional nan masking (e.g. removing data below elevation)
   + hillshading, smoothing other filtering
   + WIP
-- exportable/runnable workflows
 - (WIP) per-application recipes (e.g. graphflood, slope, ...)
 - (WIP) topographic analyses processors (e.g. stream network)
 
@@ -29,10 +28,6 @@ Create 2D and 3D figures by chaining processor and data.
 ```
 TODO
 ```
-
-### Export and run Workflows
-
-`Fig2D` amd `Fig3D` can be exported to json workflow and then rerun with different data/params.
 
 ## Processors
 

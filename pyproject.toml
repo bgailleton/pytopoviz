@@ -26,8 +26,7 @@ dependencies = [
     "shapely",
     "clarabel",
     "pyvista",
-    "numba",
-    "click"
+    "numba"
 ]
 requires-python = ">=3.10"
 keywords = ["TopoToolbox", "visualization", "PyVista"]
@@ -48,14 +47,14 @@ Homepage = "https://topotoolbox.github.io"
 Repository = "https://github.com/TopoToolbox/pytopoviz"
 Issues = "https://github.com/TopoToolbox/pytopoviz/issues"
 
-[project.scripts]
-pytopoviz-run = "pytopoviz.cli:main"
-
 [tool.setuptools]
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+pytopoviz = ["theme/**"]
 
 [tool.pylint]
 disable = [
