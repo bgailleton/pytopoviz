@@ -40,7 +40,6 @@ def convert_ticks_to_km(ax, axes: Literal["x", "y", "both"] = "both") -> None:
         ylabel = ax.get_ylabel()
         if ylabel and "m" in ylabel.lower() and "km" not in ylabel.lower():
             ax.set_ylabel(ylabel.replace("m", "km").replace("M", "km"))
-    _record_action(ax, {"type": "convert_ticks_to_km", "axes": axes})
 
 
 def add_grid_crosses(
@@ -98,26 +97,6 @@ def add_grid_crosses(
                 alpha=marker_alpha,
                 zorder=100,
             )
-    _record_action(
-        ax,
-        {
-            "type": "add_grid_crosses",
-            "color": color,
-            "size": size,
-            "linewidth": linewidth,
-            "alpha": alpha,
-            "include_minor": include_minor,
-        },
-    )
-
-
-def _record_action(ax, action: dict) -> None:
-    actions = getattr(ax, "_tpz_actions", None)
-    if actions is None:
-        actions = []
-        setattr(ax, "_tpz_actions", actions)
-    actions.append(action)
-
 
 def add_colorbar(ax, im, label=None, fraction=0.035, pad=0.05, labelpad=5):
     """

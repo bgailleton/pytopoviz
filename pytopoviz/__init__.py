@@ -47,7 +47,6 @@ from .style2d import (
     get_style,
 )
 from .helper2d import convert_ticks_to_km, add_grid_crosses, add_colorbar
-from .workflow import Workflow, workflow_from_fig2d, workflow_from_fig3d
 
 __all__ = [
     "MapObject",
@@ -102,8 +101,5 @@ __all__ = [
     "get_style",
     "convert_ticks_to_km",
     "add_grid_crosses",
-    "Workflow",
-    "workflow_from_fig2d",
-    "workflow_from_fig3d",
     "__version__",
 ]

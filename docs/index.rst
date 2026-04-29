@@ -12,7 +12,6 @@ this extension does not rely on ``libtopotoolbox``.
 
    README
    processors
-   workflows
 
 Indices and tables
 ==================
