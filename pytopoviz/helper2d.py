@@ -76,8 +76,8 @@ def add_grid_crosses(
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
 
-    xticks = [x for x in xticks if xlim[0] <= x <= xlim[1]]
-    yticks = [y for y in yticks if ylim[0] <= y <= ylim[1]]
+    xticks = [x for x in xticks if min(xlim) <= x <= max(xlim)]
+    yticks = [y for y in yticks if min(ylim) <= y <= max(ylim)]
 
     minor_xticks = set(ax.get_xticks(minor=True)) if include_minor else set()
     minor_yticks = set(ax.get_yticks(minor=True)) if include_minor else set()
@@ -98,31 +98,69 @@ def add_grid_crosses(
                 zorder=100,
             )
 
-def add_colorbar(ax, im, label=None, fraction=0.035, pad=0.05, labelpad=5):
+def add_colorbar(ax, mappable, label=None, location="right", size="5%", pad=0.05, labelpad=5, shrink=1.0):
     """
-    Attach a colorbar aligned to the height of the given axis.
+    Attach a colorbar to an axes, sized to match the axes edge.
+
+    Uses ``inset_axes`` so the colorbar is locked to the axes (not the figure)
+    and supports fractional shrinking along its long axis.
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
-        Axis associated with the image.
-    im : matplotlib.image.AxesImage
-        Image returned by imshow.
+        Axes to attach the colorbar to.
+    mappable : matplotlib.cm.ScalarMappable
+        The mappable (e.g. return value of ``imshow``) to describe.
     label : str, optional
         Colorbar label.
-    fraction : float, optional
-        Fraction of original axes to use for the colorbar width.
+    location : {'right', 'left', 'top', 'bottom'}
+        Which edge of the axes to place the colorbar on.
+    size : str, optional
+        Thickness of the colorbar as a percentage of the axes short dimension,
+        e.g. ``"5%"``.
     pad : float, optional
-        Padding between axis and colorbar.
+        Padding between the axes and the colorbar in axes-fraction units.
+    labelpad : float, optional
+        Padding between the colorbar and its label.
+    shrink : float, optional
+        Fraction of the axes long dimension to use for the colorbar length.
+        1.0 (default) matches the full axes edge; 0.5 gives half-length centered.
+
+    Returns
+    -------
+    matplotlib.colorbar.Colorbar
     """
-    cbar = ax.figure.colorbar(
-        im,
-        ax=ax,
-        fraction=fraction,
-        pad=pad,
-        shrink=0.9,
-        anchor=(0.0, 0.5),
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+    vertical = location in ("right", "left")
+    orientation = "vertical" if vertical else "horizontal"
+
+    long_pct = f"{shrink * 100:.4g}%"
+
+    if vertical:
+        width, height = size, long_pct
+    else:
+        width, height = long_pct, size
+
+    loc_map = {"right": "center left", "left": "center right", "top": "lower center", "bottom": "upper center"}
+    anchor_map = {
+        "right":  (1.0 + pad, 0.0, 1.0, 1.0),
+        "left":   (-pad,      0.0, 1.0, 1.0),
+        "top":    (0.0, 1.0 + pad, 1.0, 1.0),
+        "bottom": (0.0, -pad,      1.0, 1.0),
+    }
+
+    cax = inset_axes(
+        ax,
+        width=width,
+        height=height,
+        loc=loc_map[location],
+        bbox_to_anchor=anchor_map[location],
+        bbox_transform=ax.transAxes,
+        borderpad=0,
     )
+
+    cbar = ax.figure.colorbar(mappable, cax=cax, orientation=orientation)
     if label is not None:
         cbar.set_label(label, labelpad=labelpad)
     return cbar

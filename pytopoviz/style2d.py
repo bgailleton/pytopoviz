@@ -8,6 +8,7 @@ __all__ = [
     "apply_color_pres_style",
     "apply_paper_style",
     "apply_bw_paper_style",
+    "apply_nothing_style",
     "set_style",
     "get_style",
 ]
@@ -480,6 +481,44 @@ def apply_bw_paper_style() -> None:
     plt.rcParams["ps.fonttype"] = 42
 
 
+def apply_nothing_style() -> None:
+    """
+    Apply a bare style: transparent background, no axes, no text.
+
+    Intended for clean image export or compositing where only the data should be visible.
+    """
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["figure.facecolor"] = "none"
+    plt.rcParams["axes.facecolor"] = "none"
+    plt.rcParams["savefig.facecolor"] = "none"
+    plt.rcParams["figure.edgecolor"] = "none"
+    plt.rcParams["savefig.transparent"] = True
+
+    plt.rcParams["axes.spines.top"] = False
+    plt.rcParams["axes.spines.right"] = False
+    plt.rcParams["axes.spines.left"] = False
+    plt.rcParams["axes.spines.bottom"] = False
+
+    plt.rcParams["xtick.bottom"] = False
+    plt.rcParams["xtick.labelbottom"] = False
+    plt.rcParams["ytick.left"] = False
+    plt.rcParams["ytick.labelleft"] = False
+
+    plt.rcParams["axes.titlesize"] = 12
+    plt.rcParams["axes.labelsize"] = 12
+    plt.rcParams["xtick.labelsize"] = 10
+    plt.rcParams["ytick.labelsize"] = 10
+
+    plt.rcParams["axes.grid"] = False
+    plt.rcParams["figure.autolayout"] = False
+    plt.rcParams["figure.constrained_layout.use"] = False
+
+    plt.rcParams["image.interpolation"] = "antialiased"
+    plt.rcParams["savefig.bbox"] = "tight"
+    plt.rcParams["savefig.pad_inches"] = 0.0
+
+
 def _builtin_style_lookup() -> dict[str, str]:
     """Return a lowercase lookup for matplotlib's available styles."""
     import matplotlib.pyplot as plt
@@ -508,6 +547,7 @@ def set_style(style: str) -> None:
         "color_pres": apply_color_pres_style,
         "paper": apply_paper_style,
         "bw_paper": apply_bw_paper_style,
+        "nothing": apply_nothing_style,
     }
 
     global _CURRENT_STYLE

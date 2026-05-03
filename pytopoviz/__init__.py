@@ -43,10 +43,12 @@ from .style2d import (
     apply_color_pres_style,
     apply_paper_style,
     apply_bw_paper_style,
+    apply_nothing_style,
     set_style,
     get_style,
 )
 from .helper2d import convert_ticks_to_km, add_grid_crosses, add_colorbar
+from .helper2d_text import set_font, set_font_size, set_font_style, set_font_color
 
 __all__ = [
     "MapObject",
@@ -97,9 +99,14 @@ __all__ = [
     "apply_color_pres_style",
     "apply_paper_style",
     "apply_bw_paper_style",
+    "apply_nothing_style",
     "set_style",
     "get_style",
     "convert_ticks_to_km",
     "add_grid_crosses",
+    "set_font",
+    "set_font_size",
+    "set_font_style",
+    "set_font_color",
     "__version__",
 ]
