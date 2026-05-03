@@ -1,6 +1,6 @@
 """pytopoviz placeholder package."""
 
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 
 from .map_object import MapObject
 from .hillshading import hillshade, multishade, smooth_hillshade, smooth_multishade

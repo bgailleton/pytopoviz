@@ -20,6 +20,23 @@ pip install .
 
 (_Once stable, there will be a pip package_)
 
+**Dependencies** (installed automatically via pip):
+
+| Package | Role |
+|---|---|
+| `topotoolbox >= 0.0.7` | Core grid and analysis objects |
+| `numpy >= 1.23.5` | Array operations |
+| `matplotlib` | 2D figure rendering |
+| `pyvista` | 3D figure rendering |
+| `scipy` | Spatial filters (e.g. Gaussian smooth) |
+| `numba` | JIT-compiled processing kernels |
+| `cmcrameri` | Perceptually uniform scientific colormaps |
+| `rasterio` | Raster I/O |
+| `geopandas` / `shapely` | Vector geometry support |
+| `clarabel` | Quadratic programming solver |
+
+Optional extras: `pip install "pytopoviz[docs]"` (Sphinx) or `pip install "pytopoviz[test]"` (pytest).
+
 **2D figure:**
 
 ```python

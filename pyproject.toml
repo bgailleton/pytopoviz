@@ -7,7 +7,7 @@ requires = [
 
 [project]
 name = "pytopoviz"
-version = "0.0.0"
+version = "0.0.1"
 authors = [
     {name = "TopoToolbox Contributors"},
     {name = "Boris Gailleton", email = "boris.gailleton@univ-rennes.fr"}
