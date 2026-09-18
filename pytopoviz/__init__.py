@@ -1,112 +1,62 @@
-"""pytopoviz placeholder package."""
+"""pytopoviz — plumbing framework between science libraries and any frontend.
+
+The framework lives in :mod:`pytopoviz.core` (types, processes, converters,
+sessions, workflows, contract). See ``DESIGN.md``.
+
+The legacy 2D/3D figure code (``MapObject``, ``Fig2DObject``, processors, styles)
+lives in :mod:`pytopoviz.legacy` — pre-alpha throwaway kept importable for reference,
+being rethought from scratch as ``figmaker`` (DESIGN.md §9). It is loaded lazily and
+optional heavy deps (e.g. pyvista) never gate importing the framework.
+"""
+
+from __future__ import annotations
 
 __version__ = "0.0.1"
 
-from .map_object import MapObject
-from .hillshading import hillshade, multishade, smooth_hillshade, smooth_multishade
-from .fig2d import Fig2DObject, quickmap
-from .fig3d import quickmap3d, Fig3DObject
-from .processing import (
-    ProcessorFactory,
-    ProcessingFunction,
-    expand_plottables,
-    is_plottable,
-    processor,
-)
-from .helper3d import (
-    scale,
-    double_scale,
-    halve_scale,
-    tenfold,
-    tenthfold,
-    lighting_control,
-    matte_lighting,
-    glossy_lighting,
-    flat_lighting,
-    dramatic_lighting,
-    heightmap_lighting,
-    lighting_intensity_up,
-    lighting_intensity_down,
-    lighting_brighten,
-    lighting_darken,
-    light_rotate_left,
-    light_rotate_right,
-    light_raise,
-    light_lower,
-    BUILTIN_3D,
-)
-from .masknan import nan_above, nan_below, nan_equal, nan_mask, BUILTIN_MASK_NAN
-from .shading2d import hillshade_processor, multishade_processor, BUILTIN_SHADING
-from .filter2d import gaussian_smooth, BUILTIN_FILTERS
-from .style2d import (
-    apply_dark_pres_mono_style,
-    apply_color_pres_style,
-    apply_paper_style,
-    apply_bw_paper_style,
-    apply_nothing_style,
-    set_style,
-    get_style,
-)
-from .helper2d import convert_ticks_to_km, add_grid_crosses, add_colorbar
-from .helper2d_text import set_font, set_font_size, set_font_style, set_font_color
+from . import core  # framework — always available
 
-__all__ = [
-    "MapObject",
-    "ProcessingFunction",
-    "ProcessorFactory",
-    "expand_plottables",
-    "is_plottable",
-    "processor",
-    "scale",
-    "double_scale",
-    "halve_scale",
-    "tenfold",
-    "tenthfold",
-    "lighting_control",
-    "matte_lighting",
-    "glossy_lighting",
-    "flat_lighting",
-    "dramatic_lighting",
-    "heightmap_lighting",
-    "lighting_intensity_up",
-    "lighting_intensity_down",
-    "lighting_brighten",
-    "lighting_darken",
-    "light_rotate_left",
-    "light_rotate_right",
-    "light_raise",
-    "light_lower",
-    "nan_equal",
-    "nan_below",
-    "nan_above",
-    "nan_mask",
-    "hillshade_processor",
-    "multishade_processor",
-    "gaussian_smooth",
-    "BUILTIN_MASK_NAN",
-    "BUILTIN_SHADING",
-    "BUILTIN_FILTERS",
-    "BUILTIN_3D",
-    "Fig2DObject",
-    "Fig3DObject",
-    "hillshade",
-    "multishade",
-    "smooth_hillshade",
-    "smooth_multishade",
-    "quickmap",
-    "quickmap3d",
-    "apply_dark_pres_mono_style",
-    "apply_color_pres_style",
-    "apply_paper_style",
-    "apply_bw_paper_style",
-    "apply_nothing_style",
-    "set_style",
-    "get_style",
-    "convert_ticks_to_km",
-    "add_grid_crosses",
-    "set_font",
-    "set_font_size",
-    "set_font_style",
-    "set_font_color",
-    "__version__",
-]
+__all__ = ["core", "__version__"]
+
+
+# ---- legacy figure API (optional, lazy) -------------------------------------
+# Exposed on attribute access so a missing viz dependency does not break
+# `import pytopoviz` or `import pytopoviz.core`.
+
+_LEGACY_EXPORTS = {
+    "MapObject": ".legacy.map_object",
+    "hillshade": ".legacy.hillshading",
+    "multishade": ".legacy.hillshading",
+    "smooth_hillshade": ".legacy.hillshading",
+    "smooth_multishade": ".legacy.hillshading",
+    "Fig2DObject": ".legacy.fig2d",
+    "quickmap": ".legacy.fig2d",
+    "quickmap3d": ".legacy.fig3d",
+    "Fig3DObject": ".legacy.fig3d",
+    "ProcessorFactory": ".legacy.processing",
+    "ProcessingFunction": ".legacy.processing",
+    "expand_plottables": ".legacy.processing",
+    "is_plottable": ".legacy.processing",
+    "processor": ".legacy.processing",
+    "nan_above": ".legacy.masknan",
+    "nan_below": ".legacy.masknan",
+    "nan_equal": ".legacy.masknan",
+    "nan_mask": ".legacy.masknan",
+    "hillshade_processor": ".legacy.shading2d",
+    "multishade_processor": ".legacy.shading2d",
+    "gaussian_smooth": ".legacy.filter2d",
+    "set_style": ".legacy.style2d",
+    "get_style": ".legacy.style2d",
+    "convert_ticks_to_km": ".legacy.helper2d",
+    "add_grid_crosses": ".legacy.helper2d",
+    "add_colorbar": ".legacy.helper2d",
+}
+
+
+def __getattr__(name: str):
+    module_path = _LEGACY_EXPORTS.get(name)
+    if module_path is None:
+        raise AttributeError(f"module 'pytopoviz' has no attribute {name!r}")
+    import importlib
+
+    module = importlib.import_module(module_path, __name__)
+    return getattr(module, name)

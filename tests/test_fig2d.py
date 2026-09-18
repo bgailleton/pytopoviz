@@ -9,9 +9,9 @@ import numpy as np
 from topotoolbox import GridObject
 
 from pytopoviz import Fig2DObject, MapObject, quickmap
-from pytopoviz.masknan import nan_above
-from pytopoviz.shading2d import hillshade_processor
-from pytopoviz.processing import ProcessingFunction
+from pytopoviz.legacy.masknan import nan_above
+from pytopoviz.legacy.shading2d import hillshade_processor
+from pytopoviz.legacy.processing import ProcessingFunction
 
 
 def _grid_with_values(values):

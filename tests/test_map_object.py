@@ -3,7 +3,7 @@ import numpy as np
 from topotoolbox import GridObject
 
 from pytopoviz import MapObject, expand_plottables
-from pytopoviz.masknan import nan_above, nan_below
+from pytopoviz.legacy.masknan import nan_above, nan_below
 
 
 def test_map_object_defaults_and_nan_handling():
