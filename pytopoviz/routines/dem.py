@@ -13,8 +13,10 @@ from ..core.registries import PROCESSES
     id="pytopoviz.load_and_smooth",
     label="Load sample DEM and smooth",
     params=[
-        Param("name", "string", default="bigtujunga"),
-        Param("sigma", "float", default=2.0, min=0.0),
+        Param("name", "string", default="bigtujunga",
+              doc="Name of a DEM in the TopoToolbox/DEMs repository."),
+        Param("sigma", "float", default=2.0, min=0.0,
+              doc="Standard deviation of the Gaussian kernel, in cells."),
     ],
     outputs=[Output("smoothed", "topotoolbox.GridObject")],
     impl="composite",

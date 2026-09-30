@@ -20,9 +20,11 @@ from . import _conceptual  # noqa: F401,E402
 
 # Library adapter modules to load, in order. A missing library is skipped.
 _ADAPTER_MODULES = [
+    "geopandas",
     "topotoolbox",
     "pyfastflow",
     "lsdtt3",
+    "dem_sources",
 ]
 
 _loaded = []

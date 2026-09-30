@@ -7,7 +7,9 @@
 ``type`` on each is one type_id or a union list of type_ids. When it is a union,
 all members must share one kind (validated against a TypeRegistry, not here).
 ``arg`` remaps the interface name onto the wrapped library's parameter name; it
-defaults to ``name`` (DESIGN.md §8).
+defaults to ``name`` (DESIGN.md §8). ``doc`` is a free-text description emitted in
+the contract; left empty, the contract uses the type's own doc. ``choice_labels``
+gives a Param's choices display names (same order), for frontends.
 
 Author: B.G.
 """
@@ -41,6 +43,7 @@ class Port:
     type: TypeRef
     optional: bool = False
     arg: Optional[str] = None
+    doc: str = ""
 
     @property
     def types(self) -> Tuple[str, ...]:
@@ -63,6 +66,8 @@ class Param:
     max: Optional[float] = None
     optional: bool = False
     arg: Optional[str] = None
+    doc: str = ""
+    choice_labels: Optional[Sequence[str]] = None
 
     @property
     def types(self) -> Tuple[str, ...]:
@@ -83,10 +88,13 @@ class Param:
 
 @dataclass(frozen=True)
 class Output:
-    """A typed produced value."""
+    """A typed produced value. An ``optional`` output may be left out (absent
+    from the returned dict, or ``None``); it is then not produced."""
 
     name: str
     type: TypeRef
+    doc: str = ""
+    optional: bool = False
 
     @property
     def types(self) -> Tuple[str, ...]:

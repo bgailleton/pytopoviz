@@ -16,12 +16,20 @@ or a tuple/list in declared order.
 ``impl`` records how the process is implemented for the contract:
 "library" (adapter wrapper over a lib fn) or "composite" (body calls processes).
 
+``description`` defaults to the decorated function's docstring.
+
+``describe`` is an optional callable taking the same keyword arguments as the
+process: it says, cheaply and without running it, what a run would produce (grid
+shape, download size...), as a JSON-serialisable dict. Frontends call it to
+preview a run.
+
 Author: B.G.
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -41,6 +49,7 @@ class ProcessSpec:
     params: Tuple[Param, ...]
     outputs: Tuple[Output, ...]
     impl: str  # "library" | "composite"
+    description: str = ""
 
     def input(self, name: str) -> Port:
         for p in self.inputs:
@@ -68,14 +77,26 @@ class Process:
     the return into ``{output_name: value}``.
     """
 
-    def __init__(self, fn: Callable, spec: ProcessSpec) -> None:
+    def __init__(self, fn: Callable, spec: ProcessSpec,
+                 describe: Optional[Callable] = None) -> None:
         self._fn = fn
+        self._describe = describe
         self.spec = spec
         functools.update_wrapper(self, fn)
 
     @property
     def id(self) -> str:
         return self.spec.id
+
+    @property
+    def describable(self) -> bool:
+        return self._describe is not None
+
+    def describe(self, **kwargs) -> Dict:
+        """What a run with these arguments would produce, without running it."""
+        if self._describe is None:
+            raise ValidationError(f"process {self.spec.id!r} has no describe")
+        return self._describe(**kwargs)
 
     def __call__(self, **kwargs):
         result = self._fn(**kwargs)
@@ -86,6 +107,8 @@ class Process:
         return self._fn(**kwargs)
 
     def _bind_outputs(self, result) -> Dict[str, object]:
+        """Map the raw result to ``{output name: value}``. Optional outputs
+        that are absent or ``None`` are left out of the mapping."""
         outs = self.spec.outputs
         if len(outs) == 0:
             return {}
@@ -95,12 +118,16 @@ class Process:
             return {outs[0].name: result}
         # multiple outputs
         if isinstance(result, dict):
-            missing = [o.name for o in outs if o.name not in result]
+            missing = [o.name for o in outs if o.name not in result and not o.optional]
             if missing:
                 raise ValidationError(
                     f"process {self.spec.id!r} returned dict missing outputs: {missing}"
                 )
-            return {o.name: result[o.name] for o in outs}
+            return {
+                o.name: result[o.name]
+                for o in outs
+                if not (o.optional and result.get(o.name) is None)
+            }
         if isinstance(result, (tuple, list)):
             if len(result) != len(outs):
                 raise ValidationError(
@@ -159,6 +186,7 @@ def make_spec(
     params: Optional[Sequence[Param]] = None,
     outputs: Optional[Sequence[Output]] = None,
     impl: str = "composite",
+    description: str = "",
 ) -> ProcessSpec:
     if not id or not isinstance(id, str):
         raise RegistrationError("process id must be a non-empty string")
@@ -167,6 +195,14 @@ def make_spec(
     inputs = tuple(inputs or ())
     params = tuple(params or ())
     outputs = tuple(outputs or ())
+
+    for p in params:
+        if p.choice_labels is not None and (
+            p.choices is None or len(p.choice_labels) != len(p.choices)
+        ):
+            raise RegistrationError(
+                f"process {id!r}: param {p.name!r} needs one choice label per choice"
+            )
 
     seen = set()
     for item in (*inputs, *params, *outputs):
@@ -183,6 +219,7 @@ def make_spec(
         params=params,
         outputs=outputs,
         impl=impl,
+        description=description or "",
     )
 
 
@@ -194,6 +231,8 @@ def process(
     outputs: Optional[Sequence[Output]] = None,
     impl: str = "composite",
     registry: Optional[ProcessRegistry] = None,
+    description: Optional[str] = None,
+    describe: Optional[Callable] = None,
 ) -> Callable[[Callable], Process]:
     """Decorator turning a function into a registered Process.
 
@@ -202,8 +241,9 @@ def process(
     """
 
     def decorate(fn: Callable) -> Process:
-        spec = make_spec(id, label, inputs, params, outputs, impl)
-        proc = Process(fn, spec)
+        desc = description if description is not None else (inspect.getdoc(fn) or "")
+        spec = make_spec(id, label, inputs, params, outputs, impl, desc)
+        proc = Process(fn, spec, describe)
         target = registry if registry is not None else DEFAULT_PROCESSES
         target.add(proc)
         return proc

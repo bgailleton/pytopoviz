@@ -361,6 +361,14 @@ class Workflow:
                     value = input_values[source["$ref"]]
                 else:
                     up_id, up_port = _split_ref(source)
+                    if (up_id, up_port) not in produced:
+                        # An optional upstream output that was not produced.
+                        if port.optional:
+                            continue
+                        raise WorkflowError(
+                            f"node {node.id!r} input {port.name!r}: "
+                            f"{up_id}.{up_port} was not produced"
+                        )
                     handle = produced[(up_id, up_port)]
                     value = session.get(handle)
                 coerced, _ = self._converters.resolve(value, port.types)
@@ -377,10 +385,12 @@ class Workflow:
                 )
                 produced[(node.id, oname)] = handle
 
+        # An optional output a node did not produce is left out of the results.
         results: Dict[str, DataHandle] = {}
         for oname, ref in self.outputs.items():
             up_id, up_port = _split_ref(ref)
-            results[oname] = produced[(up_id, up_port)]
+            if (up_id, up_port) in produced:
+                results[oname] = produced[(up_id, up_port)]
         return results
 
     def _resolve_inputs(self, args: Dict[str, object]) -> Dict[str, object]:

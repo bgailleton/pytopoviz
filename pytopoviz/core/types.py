@@ -1,7 +1,8 @@
 """Type registry.
 
 A *Type* binds a stable ``type_id`` to a ``kind`` and a ``check`` used to decide
-whether a runtime value is of that type. ``check`` is either an isinstance class
+whether a runtime value is of that type, plus an optional ``doc`` that interface
+members of that type fall back to in the contract. ``check`` is either an isinstance class
 (or tuple of classes) or a predicate ``value -> bool`` — the latter disambiguates
 variants that share a Python class (e.g. ``field2d_f32`` vs ``field2d_f64``).
 
@@ -34,6 +35,7 @@ class TypeSpec:
     type_id: str
     kind: str
     check: Check
+    doc: str = ""
 
     def matches(self, value: object) -> bool:
         chk = self.check
@@ -51,7 +53,7 @@ class TypeRegistry:
         self._types: Dict[str, TypeSpec] = {}
 
     def register_type(
-        self, type_id: str, kind: str, check: Check
+        self, type_id: str, kind: str, check: Check, doc: str = ""
     ) -> TypeSpec:
         if not type_id or not isinstance(type_id, str):
             raise RegistrationError("type_id must be a non-empty string")
@@ -61,7 +63,7 @@ class TypeRegistry:
             raise RegistrationError(f"unknown kind {kind!r} for type {type_id!r}")
         if check is None:
             raise RegistrationError(f"type {type_id!r} needs a check")
-        spec = TypeSpec(type_id=type_id, kind=kind, check=check)
+        spec = TypeSpec(type_id=type_id, kind=kind, check=check, doc=doc)
         self._types[type_id] = spec
         return spec
 

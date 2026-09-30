@@ -18,7 +18,7 @@ PARAM_KINDS: FrozenSet[str] = frozenset(
 )
 
 DATA_KINDS: FrozenSet[str] = frozenset(
-    {"grid", "field", "graph", "vector", "file"}
+    {"grid", "field", "graph", "vector", "table", "file"}
 )
 
 KINDS: FrozenSet[str] = PARAM_KINDS | DATA_KINDS
