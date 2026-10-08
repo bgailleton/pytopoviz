@@ -18,6 +18,7 @@ from .converter import ConverterRegistry
 from .kinds import DATA_KINDS, PARAM_KINDS
 from .ports import Output, Param, Port
 from .process import ProcessRegistry
+from .runner import RUNNERS
 from .types import TypeRegistry
 
 SCHEMA_VERSION = "0.1.0"
@@ -75,7 +76,7 @@ def _output_dict(types: TypeRegistry, out: Output) -> Dict:
 
 def process_contract(types: TypeRegistry, proc) -> Dict:
     spec = proc.spec
-    return {
+    entry = {
         "id": spec.id,
         "label": spec.label,
         "description": spec.description,
@@ -85,6 +86,10 @@ def process_contract(types: TypeRegistry, proc) -> Dict:
         "params": [_param_dict(types, p) for p in spec.params],
         "outputs": [_output_dict(types, o) for o in spec.outputs],
     }
+    if spec.id in RUNNERS:
+        # A live runner exists (see core.runner): its params fixed at opening.
+        entry["runner"] = {"config": list(RUNNERS[spec.id].config)}
+    return entry
 
 
 def build_contract(

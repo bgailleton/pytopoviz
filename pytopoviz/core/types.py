@@ -2,7 +2,9 @@
 
 A *Type* binds a stable ``type_id`` to a ``kind`` and a ``check`` used to decide
 whether a runtime value is of that type, plus an optional ``doc`` that interface
-members of that type fall back to in the contract. ``check`` is either an isinstance class
+members of that type fall back to in the contract, and an optional ``codec``
+(lossless ``encode(value) -> (array, meta)`` / ``decode(array, meta) -> value``,
+``meta`` JSON-serialisable) through which a Session spills values to disk. ``check`` is either an isinstance class
 (or tuple of classes) or a predicate ``value -> bool`` — the latter disambiguates
 variants that share a Python class (e.g. ``field2d_f32`` vs ``field2d_f64``).
 
@@ -19,13 +21,21 @@ Author: B.G.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterator, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Type, Union
 
 from .errors import RegistrationError, TypeError_
 from .kinds import is_kind
 
 # An isinstance target, or a value-predicate.
 Check = Union[type, Tuple[type, ...], Callable[[object], bool]]
+
+
+@dataclass(frozen=True)
+class Codec:
+    """Lossless round trip of a value through one array plus JSON metadata."""
+
+    encode: Callable[[object], Tuple[Any, Dict]]
+    decode: Callable[[Any, Dict], object]
 
 
 @dataclass(frozen=True)
@@ -36,6 +46,7 @@ class TypeSpec:
     kind: str
     check: Check
     doc: str = ""
+    codec: Optional[Codec] = None
 
     def matches(self, value: object) -> bool:
         chk = self.check
@@ -53,7 +64,8 @@ class TypeRegistry:
         self._types: Dict[str, TypeSpec] = {}
 
     def register_type(
-        self, type_id: str, kind: str, check: Check, doc: str = ""
+        self, type_id: str, kind: str, check: Check, doc: str = "",
+        codec: Optional[Codec] = None,
     ) -> TypeSpec:
         if not type_id or not isinstance(type_id, str):
             raise RegistrationError("type_id must be a non-empty string")
@@ -63,7 +75,7 @@ class TypeRegistry:
             raise RegistrationError(f"unknown kind {kind!r} for type {type_id!r}")
         if check is None:
             raise RegistrationError(f"type {type_id!r} needs a check")
-        spec = TypeSpec(type_id=type_id, kind=kind, check=check, doc=doc)
+        spec = TypeSpec(type_id=type_id, kind=kind, check=check, doc=doc, codec=codec)
         self._types[type_id] = spec
         return spec
 

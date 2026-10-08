@@ -144,7 +144,7 @@ def swath_profile_topotoolbox(
               doc="Length of each bin along the line (must be above 0)."),
     ],
     outputs=[
-        Output("profile", "datatable", doc="Mean and percentiles per bin along the line."),
+        Output("profile", "datatable", doc="Mean and percentiles per bin along the line; x, y = the bin centre on the line."),
         Output("along_axis", "lsdtt3.Raster", doc="Distance along the line of each swath cell (m)."),
         Output("perpendicular_distance", "lsdtt3.Raster",
                doc="Distance from each swath cell to the line (m)."),
@@ -165,7 +165,5 @@ def swath_profile_lsdtt3(dem, baseline, values=None, half_width_metres=0.0,
     out = PROCESSES.get("lsdtt3.swath_profile")(
         reference=dem, baseline=baseline, values=values,
         half_width_metres=half_width_metres, bin_width_metres=bin_width_metres)
-    wkt = dem.metadata.crs_wkt
-    line = baseline.to_crs(wkt) if wkt and baseline.crs() is not None else baseline
-    out["outline"] = _outline(line, half_width_metres)
+    out["outline"] = _outline(baseline.in_crs(dem.metadata.crs_wkt), half_width_metres)
     return out

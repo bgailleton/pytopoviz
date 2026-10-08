@@ -17,7 +17,7 @@ from .errors import (
     ValidationError,
     WorkflowError,
 )
-from .types import TypeRegistry, TypeSpec
+from .types import Codec, TypeRegistry, TypeSpec
 from .ports import Output, Param, Port
 from .process import (
     Process,
@@ -28,9 +28,12 @@ from .process import (
     validate_spec_types,
 )
 from .converter import ConverterRegistry, ConverterSpec
-from .session import DataHandle, Session
+from .session import GROUP, ROLES, DataHandle, Session
+from .series import frames, record, sweep
 from .contract import SCHEMA_VERSION, build_contract, process_contract
 from .workflow import Workflow
+from . import progress
+from .runner import RUNNERS, Runner, run_once, runner
 
 from . import registries
 from .registries import (
@@ -52,7 +55,7 @@ __all__ = [
     "PytopovizError", "RegistrationError", "ConversionError", "ValidationError",
     "SessionError", "WorkflowError",
     # types
-    "TypeRegistry", "TypeSpec",
+    "TypeRegistry", "TypeSpec", "Codec",
     # interface
     "Port", "Param", "Output",
     # process
@@ -61,7 +64,9 @@ __all__ = [
     # converter
     "ConverterRegistry", "ConverterSpec",
     # session
-    "Session", "DataHandle",
+    "Session", "DataHandle", "GROUP", "ROLES",
+    # series
+    "record", "sweep", "frames",
     # contract
     "build_contract", "process_contract", "SCHEMA_VERSION",
     # workflow

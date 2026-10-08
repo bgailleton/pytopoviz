@@ -163,6 +163,14 @@ class GeoVector:
         return dataclasses.replace(self, xy=np.column_stack([x, y]), epsg=epsg,
                                    crs_wkt="" if epsg else dst.to_wkt())
 
+    def in_crs(self, crs) -> "GeoVector":
+        """Reprojected to ``crs`` when both it and this GeoVector have a CRS
+        (``crs`` empty / None / 0: none); otherwise self, coordinates taken
+        as already in it."""
+        if not crs or self.crs() is None:
+            return self
+        return self.to_crs(crs)
+
     # ---- transport: one float64 array + JSON metadata ----------------------
 
     def to_array(self) -> np.ndarray:

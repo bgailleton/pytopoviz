@@ -10,7 +10,9 @@ the process that made it.
 - ``roles``: {name: role}; missing = "series". Roles (``ROLES``):
   ``x`` the abscissa (at most one column), ``series`` a value plotted against
   it, ``band_lo``/``band_hi`` the bounds of a band, ``count`` a sample count,
-  ``aux`` kept but not plotted by default (e.g. coordinates).
+  ``aux`` kept but not plotted by default, ``map_x``/``map_y`` the map
+  coordinates of each row (at most one column each, both or neither: a
+  frontend can mark a hovered row on the map).
 - ``bands``: [(lo, hi)] pairs; every ``band_lo``/``band_hi`` column is in
   exactly one pair, lo with role ``band_lo`` and hi with ``band_hi``.
 - ``title``: free text.
@@ -25,7 +27,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-ROLES = ("x", "series", "band_lo", "band_hi", "count", "aux")
+ROLES = ("x", "series", "band_lo", "band_hi", "count", "aux", "map_x", "map_y")
 
 
 @dataclass(eq=False)
@@ -56,8 +58,11 @@ class DataTable:
         bad = {k: r for k, r in self.roles.items() if r not in ROLES}
         if bad:
             raise ValueError(f"unknown roles {bad}; roles are {ROLES}")
-        if list(self.roles.values()).count("x") > 1:
-            raise ValueError("at most one column can have the role 'x'")
+        for single in ("x", "map_x", "map_y"):
+            if list(self.roles.values()).count(single) > 1:
+                raise ValueError(f"at most one column can have the role {single!r}")
+        if ("map_x" in self.roles.values()) != ("map_y" in self.roles.values()):
+            raise ValueError("roles 'map_x' and 'map_y' go together")
 
         self.bands = [(str(lo), str(hi)) for lo, hi in self.bands]
         in_bands = [c for pair in self.bands for c in pair]

@@ -21,9 +21,9 @@ TYPES = TypeRegistry()
 CONVERTERS = ConverterRegistry(TYPES)
 
 
-def register_type(type_id, kind, check, doc=""):
+def register_type(type_id, kind, check, doc="", codec=None):
     """Register a type in the default TypeRegistry."""
-    return TYPES.register_type(type_id, kind, check, doc)
+    return TYPES.register_type(type_id, kind, check, doc, codec)
 
 
 def register_converter(from_type, to_type, fn):

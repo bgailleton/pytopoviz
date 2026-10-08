@@ -8,6 +8,7 @@ Author: B.G.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import urllib.request
@@ -21,6 +22,7 @@ from scipy.ndimage import gaussian_filter
 from topotoolbox.utils import DEM_NAMES as _DEM_NAMES_URL
 
 from ..core import Output, Param, Port, process, register_converter, register_type
+from ..core.registries import CONVERTERS
 from ..datatable import DataTable
 from ..georaster import GeoRaster
 from ..geovector import GeoVector
@@ -249,9 +251,7 @@ def _track_indices(grid, track):
     """(rows, cols) of the single line ``track`` on ``grid``: fractional indices
     with cell centres on whole numbers. The line is reprojected to the grid's
     CRS when both have one."""
-    if grid.georef is not None and track.crs() is not None:
-        track = track.to_crs(grid.georef.to_wkt())
-    xy = track.line_xy()
+    xy = track.in_crs(grid.georef.to_wkt() if grid.georef is not None else None).line_xy()
     cols, rows = ~grid.transform * (xy[:, 0], xy[:, 1])
     return np.asarray(rows) - 0.5, np.asarray(cols) - 0.5
 
@@ -271,11 +271,11 @@ def _geovector(grid, geometry, rows, cols, **vertex_attrs):
                      epsg=epsg, crs_wkt=crs_wkt)
 
 
-def _swath_table(stats, x_name, x, percentiles, title, aux=None):
+def _swath_table(stats, x_name, x, percentiles, title, map_xy=None):
     """DataTable of a Transverse/LongitudinalSwath: ``x_name`` (x), mean and
     median (series), min-max and q1-q3 (bands), the requested percentiles
     (p with 100-p as a band, the others series), std (aux), count, then the
-    ``aux`` columns."""
+    (n, 2) ``map_xy`` of each row as x, y (map_x, map_y)."""
     nan = np.full(len(x), np.nan)
     columns = {x_name: x, "mean": stats.means,
                "median": stats.medians if stats.medians is not None else nan,
@@ -294,8 +294,9 @@ def _swath_table(stats, x_name, x, percentiles, title, aux=None):
             roles[name] = "series"
     columns["std"], roles["std"] = stats.stddevs, "aux"
     columns["count"], roles["count"] = stats.counts, "count"
-    for name, values in (aux or {}).items():
-        columns[name], roles[name] = values, "aux"
+    if map_xy is not None:
+        columns["x"], roles["x"] = map_xy[:, 0], "map_x"
+        columns["y"], roles["y"] = map_xy[:, 1], "map_y"
     return DataTable(columns, units={x_name: "m"}, roles=roles, bands=bands, title=title)
 
 
@@ -510,7 +511,7 @@ def longitudinal_swath(grid, track, distance_map, nearest_point, half_width, bin
     )
     xy = _cell_centres(grid, stats.track_x, stats.track_y)
     return _swath_table(stats, "distance", stats.along_track_distances, plist,
-                        "Along-track swath", aux={"x": xy[:, 0], "y": xy[:, 1]})
+                        "Along-track swath", map_xy=xy)
 
 
 @process(
@@ -546,7 +547,7 @@ def longitudinal_swath_windowed(grid, track, half_width, binning_distance, n_poi
     )
     xy = _cell_centres(grid, stats.track_x, stats.track_y)
     return _swath_table(stats, "distance", stats.along_track_distances, plist,
-                        "Along-track swath (windowed)", aux={"x": xy[:, 0], "y": xy[:, 1]})
+                        "Along-track swath (windowed)", map_xy=xy)
 
 
 @process(
@@ -608,3 +609,243 @@ def get_windowed_point_samples(grid, track, point_index, half_width, binning_dis
         n_points_regression=n_points_regression, input_mode="indices2D",
     )
     return _geovector(grid, "points", rows, cols)
+
+
+# ---- stream networks --------------------------------------------------------
+
+register_type("topotoolbox.FlowObject", "graph", ttb.FlowObject)
+register_type("topotoolbox.StreamObject", "graph", ttb.StreamObject)
+
+_POINTS_DOC = "Points, in any CRS (reprojected to the grid's); each falls in one cell."
+
+
+def _point_cells(obj, points, what):
+    """(rows, cols) of the cells the GeoVector ``points`` fall in, on the grid
+    of ``obj`` (GridObject, FlowObject or StreamObject: transform, shape,
+    georef); ValueError for no point or a point off the grid."""
+    if points.n_vertices == 0:
+        raise ValueError(f"no {what} given")
+    xy = points.in_crs(obj.georef.to_wkt() if obj.georef is not None else None).xy
+    cols, rows = ~obj.transform * (xy[:, 0], xy[:, 1])
+    rows, cols = np.floor(rows).astype(np.int64), np.floor(cols).astype(np.int64)
+    off = (rows < 0) | (rows >= obj.shape[0]) | (cols < 0) | (cols >= obj.shape[1])
+    if off.any():
+        raise ValueError(f"{int(off.sum())} of the {what} fall outside the grid")
+    return rows, cols
+
+
+def _stream_point_nodes(stream, points, what):
+    """Logical node attribute list of ``stream``: True at the nodes the points
+    fall on; ValueError when none falls on the network."""
+    rows, cols = _point_cells(stream, points, what)
+    marked = np.zeros(stream.shape, dtype=bool)
+    marked[rows, cols] = True
+    nodes = stream.ezgetnal(marked)
+    if not nodes.any():
+        raise ValueError(f"none of the {what} falls on a stream cell")
+    return nodes
+
+
+@process(
+    id="topotoolbox.flow_object",
+    label="Flow directions (TopoToolbox)",
+    inputs=[
+        Port("dem", "topotoolbox.GridObject", arg="grid",
+             doc="Elevation to route water over (sinks are resolved here)."),
+        Port("bc", "topotoolbox.GridObject", optional=True,
+             doc="Cells kept at their DEM elevation when sinks are filled (nonzero = kept)."),
+    ],
+    params=[
+        Param("method", "enum", default="d8", choices=["d8"], choice_labels=["D8"],
+              doc="Flow routing: each cell drains to its steepest neighbour."),
+        Param("sink_resolution", "enum", default="carve", choices=["carve", "lcat"],
+              choice_labels=["Carve", "Least-cost (lcat)"],
+              doc="How flow leaves filled sinks and flats."),
+    ],
+    outputs=[Output("flow", "topotoolbox.FlowObject", doc="Flow directions, reusable by later runs.")],
+    impl="library",
+)
+def flow_object(grid, bc=None, method="d8", sink_resolution="carve"):
+    """Where each cell sends its water.
+
+    topotoolbox.FlowObject: fills sinks, then routes flow.
+    """
+    if bc is not None:
+        bc = (np.nan_to_num(np.asarray(bc.z)) != 0).astype(np.uint8)
+    return ttb.FlowObject(grid, bc=bc, method=method, sink_resolution=sink_resolution)
+
+
+@process(
+    id="topotoolbox.stream_object",
+    label="Stream network (TopoToolbox)",
+    inputs=[
+        Port("flow", "topotoolbox.FlowObject", doc="Flow directions to trace streams on."),
+        Port("stream_pixels", "topotoolbox.GridObject", optional=True,
+             doc="Cells that are streams (nonzero); replaces the threshold."),
+        Port("channelheads", "geopoints", optional=True,
+             doc="Channel heads: keeps the streams downstream of them; " + _POINTS_DOC),
+    ],
+    params=[
+        Param("units", "enum", default="pixels", choices=["pixels", "mapunits", "m2", "km2"],
+              choice_labels=["Cells", "Map units²", "m²", "km²"],
+              doc="Units of the threshold."),
+        Param("threshold", "float", default=0.0, min=0.0,
+              doc="Upstream area needed to be a stream; 0 = automatic (1 % of the mean "
+                  "grid side, squared, in cells)."),
+    ],
+    outputs=[Output("stream", "topotoolbox.StreamObject", doc="Stream network, reusable by later runs.")],
+    impl="library",
+)
+def stream_object(flow, stream_pixels=None, channelheads=None, units="pixels", threshold=0.0):
+    """Streams traced from an upstream-area threshold, a stream mask or heads.
+
+    topotoolbox.StreamObject.
+    """
+    if stream_pixels is not None:
+        stream_pixels = np.nan_to_num(np.asarray(stream_pixels.z)) != 0
+    if channelheads is not None:
+        channelheads = _point_cells(flow, channelheads, "channel heads")
+    threshold = int(threshold) if units == "pixels" and float(threshold).is_integer() else threshold
+    return ttb.StreamObject(flow, units=units, threshold=threshold,
+                            stream_pixels=stream_pixels, channelheads=channelheads)
+
+
+@process(
+    id="topotoolbox.klargestconncomps",
+    label="Largest stream networks",
+    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network.")],
+    params=[Param("k", "int", default=1, min=1, doc="Number of networks kept, largest first.")],
+    outputs=[Output("largest", "topotoolbox.StreamObject", doc="The k largest networks.")],
+    impl="library",
+)
+def klargestconncomps(stream, k=1):
+    """Keep the k largest connected networks (by cell count).
+
+    topotoolbox StreamObject.klargestconncomps.
+    """
+    return stream.klargestconncomps(k)
+
+
+@process(
+    id="topotoolbox.trunk",
+    label="Trunk streams",
+    inputs=[
+        Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
+        Port("flow_accumulation", "topotoolbox.GridObject", optional=True,
+             doc="Flow accumulation: the trunk follows the largest one instead of the longest path."),
+    ],
+    outputs=[Output("trunk", "topotoolbox.StreamObject", doc="The trunk stream of each network.")],
+    impl="library",
+)
+def trunk(stream, flow_accumulation=None):
+    """Keep only the main stream of each network.
+
+    topotoolbox StreamObject.trunk: traced upstream along the longest path.
+    """
+    return stream.trunk(flow_accumulation=flow_accumulation)
+
+
+@process(
+    id="topotoolbox.upstreamto",
+    label="Streams upstream of points",
+    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
+            Port("points", "geopoints", doc="Points on stream cells (e.g. outlets); " + _POINTS_DOC)],
+    outputs=[Output("upstream", "topotoolbox.StreamObject", doc="The streams upstream of the points.")],
+    impl="library",
+)
+def upstreamto(stream, points):
+    """Keep the streams upstream of the given points.
+
+    topotoolbox StreamObject.upstreamto. Points must fall on stream cells.
+    """
+    return stream.upstreamto(_stream_point_nodes(stream, points, "points"))
+
+
+@process(
+    id="topotoolbox.downstreamto",
+    label="Streams downstream of points",
+    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
+            Port("points", "geopoints", doc="Points on stream cells; " + _POINTS_DOC)],
+    outputs=[Output("downstream", "topotoolbox.StreamObject", doc="The streams downstream of the points.")],
+    impl="library",
+)
+def downstreamto(stream, points):
+    """Keep the streams downstream of the given points.
+
+    topotoolbox StreamObject.downstreamto. Points must fall on stream cells.
+    """
+    return stream.downstreamto(_stream_point_nodes(stream, points, "points"))
+
+
+@process(
+    id="topotoolbox.stream_lines",
+    label="Stream lines",
+    inputs=[
+        Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
+        Port("dem", "topotoolbox.GridObject", optional=True,
+             doc="Elevation; needed for gradient and ksn."),
+        Port("flow", "topotoolbox.FlowObject", optional=True,
+             doc="Flow directions of the network; needed for drainage area, ksn and chi."),
+    ],
+    params=[
+        Param("stream_order", "enum", default="strahler", choices=["none", "strahler", "shreve"],
+              choice_labels=["None", "Strahler", "Shreve"], doc="Stream order of every vertex."),
+        Param("drainage_area", "bool", default=True, doc="Add the drainage area (m², needs the flow)."),
+        Param("upstream_distance", "bool", default=True,
+              doc="Add the distance from the farthest channel head (map units)."),
+        Param("downstream_distance", "bool", default=False,
+              doc="Add the distance to the outlet (map units)."),
+        Param("gradient", "bool", default=False, doc="Add the channel gradient (needs the DEM)."),
+        Param("ksn", "bool", default=False,
+              doc="Add the normalised steepness index (needs the DEM and the flow)."),
+        Param("chi", "bool", default=False, doc="Add chi (needs the flow)."),
+        Param("impose", "bool", default=False,
+              doc="Gradient and ksn: impose downstream minima first (no negative slopes)."),
+        Param("theta", "float", default=0.45, min=0.0, doc="ksn: reference concavity."),
+        Param("mn", "float", default=0.45, min=0.0, doc="chi: m/n ratio."),
+        Param("a0", "float", default=1e6, min=0.0, doc="chi: reference area (map units²)."),
+    ],
+    outputs=[Output("lines", "geolines",
+                    doc="The streams as lines, one vertex per stream cell, with the chosen values "
+                        "per vertex.")],
+    impl="library",
+)
+def stream_lines(stream, dem=None, flow=None, stream_order="strahler", drainage_area=True,
+                 upstream_distance=True, downstream_distance=False, gradient=False, ksn=False,
+                 chi=False, impose=False, theta=0.45, mn=0.45, a0=1e6):
+    """The stream network as lines carrying per-node values.
+
+    topotoolbox StreamObject.to_geodataframe, streamorder, upstream_distance,
+    downstream_distance, gradient, ksn, chitransform.
+    """
+    if (gradient or ksn) and dem is None:
+        raise ValueError("gradient and ksn need the DEM")
+    if (drainage_area or ksn or chi) and flow is None:
+        raise ValueError("drainage area, ksn and chi need the flow directions")
+    values = {}
+    if stream_order != "none":
+        values["stream_order"] = stream.streamorder(method=stream_order)
+    acc = flow.flow_accumulation() if flow is not None else None  # cells
+    if drainage_area:
+        values["drainage_area"] = stream.ezgetnal(acc) * stream.cellsize ** 2
+    if upstream_distance:
+        values["upstream_distance"] = stream.upstream_distance()
+    if downstream_distance:
+        values["downstream_distance"] = stream.downstream_distance()
+    if gradient:
+        values["gradient"] = stream.gradient(dem, impose=impose)
+    if ksn:
+        values["ksn"] = stream.ksn(dem, acc, impose=impose, theta=theta)
+    if chi:
+        values["chi"] = stream.chitransform(acc, a0=a0, mn=mn)
+
+    vec = CONVERTERS.convert(stream.to_geodataframe(), "geolines",
+                             from_type="geopandas.GeoDataFrame")
+    node = np.full(stream.shape, -1, dtype=np.int64)
+    node[stream.node_indices] = np.arange(stream.stream.size)
+    cols, rows = ~stream.transform * (vec.xy[:, 0], vec.xy[:, 1])
+    vertex_node = node[np.floor(rows).astype(np.int64), np.floor(cols).astype(np.int64)]
+    if (vertex_node < 0).any():
+        raise RuntimeError("a stream line vertex is on no stream node")
+    attrs = {k: np.asarray(v, dtype=np.float64)[vertex_node] for k, v in values.items()}
+    return dataclasses.replace(vec, vertex_attrs={**vec.vertex_attrs, **attrs})

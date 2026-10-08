@@ -305,6 +305,8 @@ def test_geovector_and_datatable_meta_round_trip():
         DataTable({"a": [1.0], "b": [1.0, 2.0]})  # unequal lengths
     with pytest.raises(ValueError):
         DataTable({"lo": [1.0]}, roles={"lo": "band_lo"})  # band column outside a band
+    with pytest.raises(ValueError):
+        DataTable({"e": [1.0]}, roles={"e": "map_x"})  # map_x without map_y
 
 
 def test_geovector_to_crs():
@@ -462,7 +464,7 @@ def test_topotoolbox_swath_processes():
     along = run("topotoolbox.longitudinal_swath", grid=grid, track=prepared,
                 distance_map=maps["distance_map"], nearest_point=maps["nearest_point"],
                 half_width=300.0, binning_distance=60.0)["profile"]
-    assert along.n_rows == 201 and along.roles["x"] == "aux"
+    assert along.n_rows == 201 and along.roles["x"] == "map_x" and along.roles["y"] == "map_y"
     np.testing.assert_allclose(along.columns["x"], x)
     assert along.columns["distance"][-1] == pytest.approx(200 * cs)
     pixels = run("topotoolbox.get_point_pixels", grid=grid, track=prepared,
@@ -485,7 +487,7 @@ def test_topotoolbox_swath_processes():
 def test_lsdtt3_swath_processes():
     if not PROCESSES.has("lsdtt3.swath_profile"):
         pytest.skip("lsdtt3 adapter not loaded")
-    grid, track, _ = _swath_setup()
+    grid, track, x = _swath_setup()
     raster = CONVERTERS.convert(grid, "lsdtt3.Raster")
     res = PROCESSES.get("lsdtt3.swath_profile")(
         reference=raster, baseline=track.to_crs(4326), half_width_metres=300.0,
@@ -494,6 +496,11 @@ def test_lsdtt3_swath_processes():
     assert table.n_rows == 10 and table.roles["along_axis_centre"] == "x"
     assert table.bands == [("p0", "p100"), ("p25", "p75")]
     assert table.roles["p50"] == "series" and table.roles["p5"] == "aux"
+    # map point of each bin centre: on the line, that far from its start
+    assert table.roles["x"] == "map_x" and table.roles["y"] == "map_y"
+    y0 = grid.transform.f - 100.5 * grid.cellsize
+    np.testing.assert_allclose(table.columns["x"], x, atol=1e-3)
+    np.testing.assert_allclose(y0 - table.columns["y"], table.columns["along_axis_centre"], atol=1e-3)
     signed = CONVERTERS.convert(res["signed_perpendicular_distance"], "field2d")
     np.testing.assert_allclose(signed[200, 399:402], [-grid.cellsize, 0.0, grid.cellsize],
                                atol=1e-6)  # the line went through lon/lat

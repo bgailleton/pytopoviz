@@ -4,7 +4,9 @@ A *kind* is a coarse routing tag. The UI must learn to render each one, so addin
 a kind is a deliberate edit here (see DESIGN.md §3). Two disjoint sets:
 
 - PARAM_KINDS: scalar values that map 1:1 to a UI widget.
-- DATA_KINDS:  convertible things carried as opaque handles.
+- DATA_KINDS:  convertible things carried as opaque handles. ``state`` is a
+  solver state passed from one call to the next (no array view: the UI only
+  keeps its handle).
 
 Author: B.G.
 """
@@ -18,7 +20,7 @@ PARAM_KINDS: FrozenSet[str] = frozenset(
 )
 
 DATA_KINDS: FrozenSet[str] = frozenset(
-    {"grid", "field", "graph", "vector", "table", "file"}
+    {"grid", "field", "graph", "vector", "table", "file", "state"}
 )
 
 KINDS: FrozenSet[str] = PARAM_KINDS | DATA_KINDS
