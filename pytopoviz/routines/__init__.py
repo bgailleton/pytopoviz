@@ -11,4 +11,4 @@ Importing this package registers every routine.
 
 from __future__ import annotations
 
-from . import dem, flow, rivers, swath  # noqa: F401  (registers routines)
+from . import basins, dem, flow, lines, rivers, swath  # noqa: F401  (registers routines)

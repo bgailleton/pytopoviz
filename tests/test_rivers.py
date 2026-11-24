@@ -107,16 +107,15 @@ def test_topotoolbox_stream_lines_and_filters(dem):
 def test_river_network_routine_workflow(dem, routine):
     threshold = ({"threshold_contributing_pixels": THRESHOLD}
                  if routine.endswith("lsdtt3") else {"threshold": float(THRESHOLD)})
-    doc = {
-        "version": 1,
-        "inputs": {},
-        "nodes": [
-            {"id": "load", "process": "topotoolbox.load_dem", "params": {"name": "bigtujunga"}},
-            {"id": "rivers", "process": routine, "params": threshold,
-             "inputs": {"dem": "load.grid"}},
-        ],
-        "outputs": {"lines": "rivers.lines", "flow": "rivers.flow"},
-    }
+    nodes = [{"id": "load", "process": "topotoolbox.load_dem", "params": {"name": "bigtujunga"}}]
+    if routine.endswith("lsdtt3"):
+        nodes.append({"id": "rivers", "process": routine, "params": threshold,
+                      "inputs": {"dem": "load.grid"}})
+    else:  # the flow object is made first (Core), then picked
+        nodes += [{"id": "flow", "process": "topotoolbox.flow_object", "inputs": {"dem": "load.grid"}},
+                  {"id": "rivers", "process": routine, "params": threshold,
+                   "inputs": {"flow": "flow.flow", "dem": "load.grid"}}]
+    doc = {"version": 1, "inputs": {}, "nodes": nodes, "outputs": {"lines": "rivers.lines"}}
     session = Session(TYPES, CONVERTERS)
     handles = Workflow.from_json(doc).run({}, session=session)
     lines = session.get(handles["lines"])

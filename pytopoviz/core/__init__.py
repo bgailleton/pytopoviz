@@ -31,7 +31,7 @@ from .converter import ConverterRegistry, ConverterSpec
 from .session import GROUP, ROLES, DataHandle, Session
 from .series import frames, record, sweep
 from .contract import SCHEMA_VERSION, build_contract, process_contract
-from .workflow import Workflow
+from .workflow import Workflow, WorkflowResult, provide
 from . import progress
 from .runner import RUNNERS, Runner, run_once, runner
 
@@ -70,7 +70,7 @@ __all__ = [
     # contract
     "build_contract", "process_contract", "SCHEMA_VERSION",
     # workflow
-    "Workflow",
+    "Workflow", "WorkflowResult", "provide",
     # default registries
     "TYPES", "CONVERTERS", "PROCESSES", "registries",
     "register_type", "register_converter", "reset_defaults",

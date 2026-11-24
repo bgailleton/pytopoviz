@@ -129,6 +129,33 @@ class GeoVector:
     def n_vertices(self) -> int:
         return len(self.xy)
 
+    def feature(self, i: int) -> "GeoVector":
+        """Feature ``i`` alone, as a one-feature GeoVector of the same
+        geometry, CRS and attributes (its values)."""
+        if not 0 <= i < self.n_features:
+            raise IndexError(f"feature {i} of {self.n_features}")
+        f0, f1 = int(self.feature_offsets[i]), int(self.feature_offsets[i + 1])
+        part_offsets = ring_offsets = None
+        if self.geometry == "points":
+            v0, v1 = f0, f1
+        elif self.geometry == "lines":
+            v0, v1 = int(self.part_offsets[f0]), int(self.part_offsets[f1])
+            part_offsets = self.part_offsets[f0:f1 + 1] - v0
+        else:
+            r0, r1 = int(self.part_offsets[f0]), int(self.part_offsets[f1])
+            v0, v1 = int(self.ring_offsets[r0]), int(self.ring_offsets[r1])
+            part_offsets = self.part_offsets[f0:f1 + 1] - r0
+            ring_offsets = self.ring_offsets[r0:r1 + 1] - v0
+        attrs = {k: (v[i:i + 1] if isinstance(v, np.ndarray) else [v[i]])
+                 for k, v in self.feature_attrs.items()}
+        return GeoVector(
+            geometry=self.geometry, xy=self.xy[v0:v1],
+            feature_offsets=np.array([0, f1 - f0], dtype=np.int64),
+            part_offsets=part_offsets, ring_offsets=ring_offsets,
+            multi=self.multi[i:i + 1], feature_attrs=attrs,
+            vertex_attrs={k: v[v0:v1] for k, v in self.vertex_attrs.items()},
+            epsg=self.epsg, crs_wkt=self.crs_wkt)
+
     def line_xy(self) -> np.ndarray:
         """The (n, 2) vertices of the one line this GeoVector holds; ValueError
         unless it is lines with exactly one feature of one part."""

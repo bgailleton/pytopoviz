@@ -16,6 +16,11 @@ the process that made it.
 - ``bands``: [(lo, hi)] pairs; every ``band_lo``/``band_hi`` column is in
   exactly one pair, lo with role ``band_lo`` and hi with ``band_hi``.
 - ``title``: free text.
+- ``heatmap``: {} or a 2-D field laid out as columns: {"columns": [names],
+  "y": [values], "y_name": str, "y_unit": str, "value": str}: column
+  ``columns[k]`` holds the field's row at ``y[k]`` (along the x column), e.g.
+  an along-track profile per frame of a series. A frontend draws it as a
+  heatmap (x, y, value as colour).
 
 Author: B.G.
 """
@@ -37,6 +42,7 @@ class DataTable:
     roles: Dict[str, str] = field(default_factory=dict)
     bands: List[Tuple[str, str]] = field(default_factory=list)
     title: str = ""
+    heatmap: Dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         cols = {}
@@ -74,6 +80,19 @@ class DataTable:
             if role in ("band_lo", "band_hi") and in_bands.count(name) != 1:
                 raise ValueError(f"column {name!r} ({role}) must be in exactly one band")
         self.title = str(self.title or "")
+        if self.heatmap:
+            hm = dict(self.heatmap)
+            names = [str(c) for c in hm.get("columns", [])]
+            ys = [float(v) for v in hm.get("y", [])]
+            if not names or len(names) != len(ys):
+                raise ValueError("heatmap: 'columns' and 'y' must be non-empty and the same length")
+            missing = [c for c in names if c not in cols]
+            if missing:
+                raise ValueError(f"heatmap names unknown columns: {missing}")
+            self.heatmap = {"columns": names, "y": ys, "y_name": str(hm.get("y_name", "")),
+                            "y_unit": str(hm.get("y_unit", "")), "value": str(hm.get("value", ""))}
+        else:
+            self.heatmap = {}
 
     @property
     def n_rows(self) -> int:
@@ -99,6 +118,7 @@ class DataTable:
             "roles": dict(self.roles),
             "bands": [list(pair) for pair in self.bands],
             "title": self.title,
+            "heatmap": dict(self.heatmap),
         }
 
     @classmethod
@@ -112,4 +132,5 @@ class DataTable:
             roles=meta.get("roles", {}),
             bands=[tuple(p) for p in meta.get("bands", [])],
             title=meta.get("title", ""),
+            heatmap=meta.get("heatmap", {}),
         )

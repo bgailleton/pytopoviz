@@ -9,7 +9,12 @@ all members must share one kind (validated against a TypeRegistry, not here).
 ``arg`` remaps the interface name onto the wrapped library's parameter name; it
 defaults to ``name`` (DESIGN.md §8). ``doc`` is a free-text description emitted in
 the contract; left empty, the contract uses the type's own doc. ``choice_labels``
-gives a Param's choices display names (same order), for frontends.
+gives a Param's choices display names (same order), for frontends. ``label``
+(display name; empty: frontends derive one from ``name``) and ``unit`` (e.g.
+``"m/yr"``; empty: none) are for frontends too; a note that is not a unit
+(``"0 = off"``) goes in the label, in parentheses at its end. An
+optional Output's ``switch`` names the bool param that turns it on (default:
+``return_<output name>`` when the process has that param).
 
 Author: B.G.
 """
@@ -17,7 +22,7 @@ Author: B.G.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 # One type_id, or a union list of them.
 TypeRef = Union[str, Sequence[str]]
@@ -44,6 +49,12 @@ class Port:
     optional: bool = False
     arg: Optional[str] = None
     doc: str = ""
+    label: str = ""
+    unit: str = ""
+    #: Form hints for a host: show only when other params hold one of the
+    #: values ({param: [value, ...]}), and the group (section) of the row.
+    show_if: Optional[Dict[str, List[object]]] = field(default=None, compare=False, hash=False)
+    group: str = ""
 
     @property
     def types(self) -> Tuple[str, ...]:
@@ -68,6 +79,12 @@ class Param:
     arg: Optional[str] = None
     doc: str = ""
     choice_labels: Optional[Sequence[str]] = None
+    label: str = ""
+    unit: str = ""
+    #: Form hints for a host: show only when other params hold one of the
+    #: values ({param: [value, ...]}), and the group (section) of the row.
+    show_if: Optional[Dict[str, List[object]]] = field(default=None, compare=False, hash=False)
+    group: str = ""
 
     @property
     def types(self) -> Tuple[str, ...]:
@@ -95,6 +112,9 @@ class Output:
     type: TypeRef
     doc: str = ""
     optional: bool = False
+    switch: Optional[str] = None
+    label: str = ""
+    unit: str = ""
 
     @property
     def types(self) -> Tuple[str, ...]:

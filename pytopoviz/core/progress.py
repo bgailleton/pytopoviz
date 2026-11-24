@@ -52,6 +52,23 @@ def listening(callback: Callable[[float, float, str], None],
         _LISTENER.reset(token)
 
 
+@contextmanager
+def relayed(callback: Callable[[float, float, str], None]):
+    """Like ``listening``, keeping the cancel check of the listener around
+    (none outside one): a step of a larger run (a workflow node) reports to
+    its own callback and still stops when the host cancels."""
+    outer = _LISTENER.get()
+    with listening(callback, outer.cancelled if outer is not None else None):
+        yield
+
+
+def check_cancelled() -> None:
+    """Raises ``Cancelled`` when the host asked to stop (no report sent)."""
+    listener = _LISTENER.get()
+    if listener is not None and listener.cancelled is not None and listener.cancelled():
+        raise Cancelled("cancelled")
+
+
 def report(done: float, total: float, phase: str = "") -> None:
     """``done`` of ``total`` units of ``phase`` are finished (total <= 0: no
     measure, only the phase). Raises ``Cancelled`` when the host asked to stop."""
@@ -68,10 +85,15 @@ def report(done: float, total: float, phase: str = "") -> None:
         listener.callback(float(done), float(total), str(phase))
 
 
+#: Fewest steps between two progress reports (each may wait for the GPU).
+MIN_CHUNK = 50
+
+
 def steps(run: Callable[[int], object], n: int, phase: str = "", parts: int = 40,
           offset: int = 0, total: Optional[int] = None,
-          sync: Optional[Callable[[], object]] = None) -> None:
-    """Calls ``run(k)`` in up to ``parts`` chunks summing to ``n`` steps,
+          sync: Optional[Callable[[], object]] = None, min_chunk: int = MIN_CHUNK) -> None:
+    """Calls ``run(k)`` in up to ``parts`` chunks summing to ``n`` steps, each
+    of at least ``min_chunk`` steps (``sync`` waits for the GPU after each),
     reporting after each (``offset``/``total`` place them in a longer count).
     ``sync`` (e.g. a GPU synchronize) runs before each report so it follows
     finished work, not queued work. With nobody listening: one ``run(n)``."""
@@ -82,7 +104,7 @@ def steps(run: Callable[[int], object], n: int, phase: str = "", parts: int = 40
             run(n)
         report(offset + n, total, phase)
         return
-    chunk = max(1, -(-n // max(int(parts), 1)))
+    chunk = max(1, int(min_chunk), -(-n // max(int(parts), 1)))
     done = 0
     report(offset, total, phase)
     while done < n:

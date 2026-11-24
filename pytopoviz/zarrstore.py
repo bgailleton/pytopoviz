@@ -48,6 +48,16 @@ class ZarrStore:
         z = self._root[key]
         return (z[...] if index is None else z[index]), dict(z.attrs["meta"])
 
+    def copy_from(self, other: "ZarrStore", key: str) -> int:
+        """Copies array ``key`` of store ``other`` as it is stored (no
+        decoding); returns its bytes on disk."""
+        src = os.path.join(other.path, key)
+        dst = os.path.join(self.path, key)
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        return int(self._root[key].nbytes_stored())
+
     def delete(self, key: str) -> None:
         del self._root[key]
 

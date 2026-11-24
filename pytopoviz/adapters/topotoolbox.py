@@ -84,6 +84,7 @@ register_converter("georaster", "topotoolbox.GridObject", _georaster_to_grid)
 
 @process(
     id="topotoolbox.read_tif",
+    category="Input",
     label="Read GeoTIFF",
     params=[Param("path", "path", doc="GeoTIFF file to read.")],
     outputs=[Output("grid", "topotoolbox.GridObject")],
@@ -112,6 +113,7 @@ _SAMPLE_DEMS = _sample_dem_names()
 
 @process(
     id="topotoolbox.load_dem",
+    category="Input",
     label="Load sample DEM",
     params=[Param("name", "string",
                   default="bigtujunga" if "bigtujunga" in _SAMPLE_DEMS or not _SAMPLE_DEMS
@@ -122,12 +124,20 @@ _SAMPLE_DEMS = _sample_dem_names()
     impl="library",
 )
 def load_dem(name="bigtujunga"):
-    """Download (and cache) a sample DEM from the TopoToolbox/DEMs repository."""
+    """Download (and cache) a sample DEM from the TopoToolbox/DEMs repository.
+
+    A cached sample is read directly: ``ttb.load_dem`` first fetches the
+    repository's name list with no timeout, which can hang offline or on a
+    slow network even for a DEM already on disk."""
+    cached = os.path.join(ttb.utils.get_save_location(), f"{name}.tif")
+    if os.path.exists(cached):
+        return ttb.read_tif(cached)
     return ttb.load_dem(name)
 
 
 @process(
     id="topotoolbox.gaussian_smooth",
+    category="DEM preparation",
     label="Gaussian smooth",
     inputs=[Port("dem", "topotoolbox.GridObject")],
     params=[
@@ -155,9 +165,10 @@ def gaussian_smooth(dem, sigma=2.0, mode="nearest"):
 
 @process(
     id="topotoolbox.fillsinks",
+    category="DEM preparation",
     label="Fill sinks",
-    inputs=[Port("dem", "topotoolbox.GridObject")],
-    params=[Param("hybrid", "bool", default=True,
+    inputs=[Port("dem", "topotoolbox.GridObject", label="DEM")],
+    params=[Param("hybrid", "bool", label="Hybrid algorithm", default=True,
                   doc="Faster algorithm that uses more memory.")],
     outputs=[Output("filled", "topotoolbox.GridObject")],
     impl="library",
@@ -172,6 +183,7 @@ def fillsinks(dem, hybrid=True):
 
 @process(
     id="topotoolbox.filter",
+    category="DEM preparation",
     label="Filter DEM",
     inputs=[Port("dem", "topotoolbox.GridObject")],
     params=[
@@ -228,8 +240,8 @@ _TRACK_DOC = "One line, in any CRS (reprojected to the grid's)."
 _HALF_WIDTH_DOC = "Swath half-width: cells farther from the track are left out (map units)."
 _DISTANCE_MAP_DOC = "Signed distance map of the track (Swath distance map)."
 _NEAREST_DOC = "Nearest-vertex grid of the same track (Swath distance map)."
-_BINNING_DOC = ("Each profile point gathers the cells within this distance of it along the "
-                "track (map units).")
+_BINNING_DOC = ("Each profile point gathers the cells within this distance of it on either "
+                "side along the track (map units): half the window's length.")
 _SKIP_DOC = "Keep every n-th track vertex as a profile point."
 _REGRESSION_DOC = "Track vertices used to orient each window."
 
@@ -302,9 +314,10 @@ def _swath_table(stats, x_name, x, percentiles, title, map_xy=None):
 
 @process(
     id="topotoolbox.prepare_track",
+    category="Swath",
     label="Prepare swath track",
     inputs=[Port("grid", "topotoolbox.GridObject", doc="Grid the track is laid on."),
-            Port("track", "geolines", doc=_TRACK_DOC)],
+            Port("track", "geolines", label="Line", doc=_TRACK_DOC)],
     outputs=[Output("prepared_track", "geolines",
                     doc="The track through every cell it crosses, one vertex per cell centre.")],
     impl="library",
@@ -322,13 +335,14 @@ def prepare_track(grid, track):
 
 @process(
     id="topotoolbox.rasterize_path",
+    category="Swath",
     label="Rasterize path",
     inputs=[Port("grid", "topotoolbox.GridObject", doc="Grid the path is laid on."),
-            Port("track", "geolines", doc=_TRACK_DOC)],
+            Port("track", "geolines", label="Line", doc=_TRACK_DOC)],
     params=[
-        Param("close_loop", "bool", default=False,
+        Param("close_loop", "bool", label="Close the loop", default=False,
               doc="Also join the last vertex back to the first."),
-        Param("use_d4", "bool", default=False,
+        Param("use_d4", "bool", label="4 neighbours", default=False,
               doc="Step only between cells sharing a side (4 neighbours) instead of 8."),
     ],
     outputs=[Output("path", "geolines", doc="The cells along the line, one vertex per cell centre.")],
@@ -347,9 +361,10 @@ def rasterize_path(grid, track, close_loop=False, use_d4=False):
 
 @process(
     id="topotoolbox.simplify_line",
+    category="Swath",
     label="Simplify line",
     inputs=[Port("grid", "topotoolbox.GridObject", doc="Grid the line is laid on."),
-            Port("track", "geolines", doc=_TRACK_DOC)],
+            Port("track", "geolines", label="Line", doc=_TRACK_DOC)],
     params=[
         Param("tolerance", "float", default=1.0, min=0.0,
               doc="Fixed number: how many vertices to keep. Automatic: unused. "
@@ -376,6 +391,7 @@ def simplify_line(grid, track, tolerance=1.0, method=0):
 
 @process(
     id="topotoolbox.compute_swath_distance_map",
+    category="Swath",
     label="Swath distance map",
     inputs=[
         Port("grid", "topotoolbox.GridObject", doc="Grid the swath is laid on (e.g. the DEM)."),
@@ -385,11 +401,11 @@ def simplify_line(grid, track, tolerance=1.0, method=0):
              doc="Cells to use: nonzero = used. No-data cells of the grid are never used."),
     ],
     params=[
-        Param("half_width", "float", optional=True, min=0.0,
+        Param("half_width", "float", label="Half-width", optional=True, min=0.0,
               doc=_HALF_WIDTH_DOC + " Empty: no limit."),
-        Param("compute_signed", "bool", default=True,
+        Param("compute_signed", "bool", label="Signed", default=True,
               doc="Distances positive left of the track and negative right; unsigned otherwise."),
-        Param("return_centre_line", "bool", default=False,
+        Param("return_centre_line", "bool", label="Centreline", default=False,
               doc="Also find the swath's centreline (needs a half-width)."),
     ],
     outputs=[
@@ -432,22 +448,23 @@ def compute_swath_distance_map(grid, track, mask=None, half_width=None, compute_
 
 @process(
     id="topotoolbox.transverse_swath",
+    category="Swath",
     label="Cross-track swath profile",
-    inputs=[Port("grid", "topotoolbox.GridObject", doc=_GRID_DOC),
+    inputs=[Port("grid", "topotoolbox.GridObject", label="DEM", doc=_GRID_DOC),
             Port("distance_map", "topotoolbox.GridObject", doc=_DISTANCE_MAP_DOC)],
     params=[
-        Param("half_width", "float", min=0.0, doc=_HALF_WIDTH_DOC),
-        Param("bin_resolution", "float", default=10.0, min=0.0,
-              doc="Width of each distance bin (map units)."),
-        Param("normalize", "bool", default=False,
+        Param("half_width", "float", label="Half-width", min=0.0, doc=_HALF_WIDTH_DOC),
+        Param("bin_resolution", "float", label="Cross-track bin", optional=True, min=0.0,
+              doc="Width of each distance bin (map units). Empty: 1 cell."),
+        Param("normalize", "bool", label="Relative to the track", default=False,
               doc="Values relative to the mean of the cells within one bin of the track."),
-        Param("percentiles", "topotoolbox.percentiles", default=""),
+        Param("percentiles", "topotoolbox.percentiles", label="Extra percentiles", default=""),
     ],
     outputs=[Output("profile", "datatable",
                     doc="Statistics per distance bin; negative distances are right of the track.")],
     impl="library",
 )
-def transverse_swath(grid, distance_map, half_width, bin_resolution=10.0, normalize=False,
+def transverse_swath(grid, distance_map, half_width, bin_resolution=None, normalize=False,
                      percentiles=""):
     """Statistics of a grid across a track, by distance from it.
 
@@ -456,12 +473,15 @@ def transverse_swath(grid, distance_map, half_width, bin_resolution=10.0, normal
     absolute. Every statistic is made relative to the same reference,
     topotoolbox's: the mean of the swath cells within one bin of the track.
     """
+    from ..routines.swath import CROSS_BIN_CELLS, _size
+
     grid = _row_major(grid)
+    bin_resolution = _size(bin_resolution, CROSS_BIN_CELLS, grid.cellsize)
     dist = _values(distance_map, np.float32)
     plist = _percentile_list(percentiles)
     stats = ttb.transverse_swath(grid, dist, half_width, bin_resolution=bin_resolution,
                                  percentiles=plist)
-    title = "Cross-track swath"
+    title = "Cross-track profile (TopoToolbox)"
     if normalize:
         z, d = grid.z.ravel(), dist.ravel()
         near = (~np.isnan(z) & ~np.isnan(d) & (np.abs(d) <= half_width)
@@ -471,25 +491,28 @@ def transverse_swath(grid, distance_map, half_width, bin_resolution=10.0, normal
             if getattr(stats, name) is not None:
                 setattr(stats, name, getattr(stats, name) - ref)
         stats.percentiles = {p: v - ref for p, v in (stats.percentiles or {}).items()}
-        title += " (relative to the track)"
-    return _swath_table(stats, "distance", stats.distances, plist, title)
+        title += ", relative to the line"
+    title += " · distance + left of the line, − right"
+    return _swath_table(stats, "cross_track", stats.distances, plist, title)
 
 
 @process(
     id="topotoolbox.longitudinal_swath",
+    category="Swath",
     label="Along-track swath profile",
     inputs=[
-        Port("grid", "topotoolbox.GridObject", doc=_GRID_DOC),
+        Port("grid", "topotoolbox.GridObject", label="DEM", doc=_GRID_DOC),
         Port("track", "geolines", doc="The track the distance map was computed from."),
         Port("distance_map", "topotoolbox.GridObject", doc=_DISTANCE_MAP_DOC),
-        Port("nearest_point", "topotoolbox.GridObject", doc=_NEAREST_DOC),
+        Port("nearest_point", "topotoolbox.GridObject",
+             label="Nearest-vertex grid", doc=_NEAREST_DOC),
     ],
     params=[
-        Param("half_width", "float", min=0.0, doc=_HALF_WIDTH_DOC),
-        Param("binning_distance", "float", min=0.0,
+        Param("half_width", "float", label="Half-width", min=0.0, doc=_HALF_WIDTH_DOC),
+        Param("binning_distance", "float", label="Along-track half-window", min=0.0,
               doc=_BINNING_DOC + " 0 = only the cells nearest to it."),
-        Param("percentiles", "topotoolbox.percentiles", default=""),
-        Param("skip", "int", default=1, min=1, doc=_SKIP_DOC),
+        Param("percentiles", "topotoolbox.percentiles", label="Extra percentiles", default=""),
+        Param("skip", "int", label="Keep every n-th vertex", default=1, min=1, doc=_SKIP_DOC),
     ],
     outputs=[Output("profile", "datatable",
                     doc="Statistics per track vertex by distance along the track; x, y = the vertex.")],
@@ -510,21 +533,24 @@ def longitudinal_swath(grid, track, distance_map, nearest_point, half_width, bin
         input_mode="indices2D", skip=skip,
     )
     xy = _cell_centres(grid, stats.track_x, stats.track_y)
-    return _swath_table(stats, "distance", stats.along_track_distances, plist,
-                        "Along-track swath", map_xy=xy)
+    return _swath_table(stats, "along_track", stats.along_track_distances, plist,
+                        "Along-track profile (TopoToolbox) · distance from the line's start",
+                        map_xy=xy)
 
 
 @process(
     id="topotoolbox.longitudinal_swath_windowed",
+    category="Swath",
     label="Along-track swath profile (windowed)",
-    inputs=[Port("grid", "topotoolbox.GridObject", doc=_GRID_DOC),
+    inputs=[Port("grid", "topotoolbox.GridObject", label="DEM", doc=_GRID_DOC),
             Port("track", "geolines", doc=_TRACK_DOC)],
     params=[
-        Param("half_width", "float", min=0.0, doc=_HALF_WIDTH_DOC),
-        Param("binning_distance", "float", min=0.0, doc=_BINNING_DOC),
-        Param("n_points_regression", "int", default=5, min=1, doc=_REGRESSION_DOC),
-        Param("percentiles", "topotoolbox.percentiles", default=""),
-        Param("skip", "int", default=1, min=1, doc=_SKIP_DOC),
+        Param("half_width", "float", label="Half-width", min=0.0, doc=_HALF_WIDTH_DOC),
+        Param("binning_distance", "float", label="Along-track half-window", min=0.0, doc=_BINNING_DOC),
+        Param("n_points_regression", "int",
+              label="Vertices to orient", default=5, min=1, doc=_REGRESSION_DOC),
+        Param("percentiles", "topotoolbox.percentiles", label="Extra percentiles", default=""),
+        Param("skip", "int", label="Keep every n-th vertex", default=1, min=1, doc=_SKIP_DOC),
     ],
     outputs=[Output("profile", "datatable",
                     doc="Statistics per track vertex by distance along the track; x, y = the vertex.")],
@@ -546,23 +572,27 @@ def longitudinal_swath_windowed(grid, track, half_width, binning_distance, n_poi
         input_mode="indices2D", skip=skip,
     )
     xy = _cell_centres(grid, stats.track_x, stats.track_y)
-    return _swath_table(stats, "distance", stats.along_track_distances, plist,
-                        "Along-track swath (windowed)", map_xy=xy)
+    return _swath_table(stats, "along_track", stats.along_track_distances, plist,
+                        "Along-track profile (TopoToolbox, oriented window) · distance from the "
+                        "line's start", map_xy=xy)
 
 
 @process(
     id="topotoolbox.get_point_pixels",
+    category="Swath",
     label="Cells of an along-track point",
     inputs=[
         Port("grid", "topotoolbox.GridObject", doc="Grid the swath is laid on."),
         Port("track", "geolines", doc="The track the distance map was computed from."),
         Port("distance_map", "topotoolbox.GridObject", doc=_DISTANCE_MAP_DOC),
-        Port("nearest_point", "topotoolbox.GridObject", doc=_NEAREST_DOC),
+        Port("nearest_point", "topotoolbox.GridObject",
+             label="Nearest-vertex grid", doc=_NEAREST_DOC),
     ],
     params=[
-        Param("point_index", "int", min=0, doc="Track vertex (0 = first; counted before skip)."),
-        Param("half_width", "float", min=0.0, doc=_HALF_WIDTH_DOC),
-        Param("binning_distance", "float", min=0.0,
+        Param("point_index", "int",
+              label="Track vertex", min=0, doc="Track vertex (0 = first; counted before skip)."),
+        Param("half_width", "float", label="Half-width", min=0.0, doc=_HALF_WIDTH_DOC),
+        Param("binning_distance", "float", label="Along-track half-window", min=0.0,
               doc=_BINNING_DOC + " 0 = only the cells nearest to it."),
     ],
     outputs=[Output("pixels", "geopoints", doc="Centres of the cells the point gathers.")],
@@ -584,14 +614,17 @@ def get_point_pixels(grid, track, distance_map, nearest_point, point_index, half
 
 @process(
     id="topotoolbox.get_windowed_point_samples",
+    category="Swath",
     label="Cells of an along-track point (windowed)",
     inputs=[Port("grid", "topotoolbox.GridObject", doc="Grid the swath is laid on."),
             Port("track", "geolines", doc=_TRACK_DOC)],
     params=[
-        Param("point_index", "int", min=0, doc="Track vertex (0 = first; counted before skip)."),
-        Param("half_width", "float", min=0.0, doc=_HALF_WIDTH_DOC),
-        Param("binning_distance", "float", min=0.0, doc=_BINNING_DOC),
-        Param("n_points_regression", "int", default=5, min=1, doc=_REGRESSION_DOC),
+        Param("point_index", "int",
+              label="Track vertex", min=0, doc="Track vertex (0 = first; counted before skip)."),
+        Param("half_width", "float", label="Half-width", min=0.0, doc=_HALF_WIDTH_DOC),
+        Param("binning_distance", "float", label="Along-track half-window", min=0.0, doc=_BINNING_DOC),
+        Param("n_points_regression", "int",
+              label="Vertices to orient", default=5, min=1, doc=_REGRESSION_DOC),
     ],
     outputs=[Output("pixels", "geopoints", doc="Centres of the cells in the point's window.")],
     impl="library",
@@ -648,21 +681,23 @@ def _stream_point_nodes(stream, points, what):
 
 @process(
     id="topotoolbox.flow_object",
-    label="Flow directions (TopoToolbox)",
+    category="Flow",
+    label="Flow object",
     inputs=[
-        Port("dem", "topotoolbox.GridObject", arg="grid",
+        Port("dem", "topotoolbox.GridObject", label="DEM", arg="grid",
              doc="Elevation to route water over (sinks are resolved here)."),
-        Port("bc", "topotoolbox.GridObject", optional=True,
+        Port("bc", "topotoolbox.GridObject", label="Fixed cells", optional=True,
              doc="Cells kept at their DEM elevation when sinks are filled (nonzero = kept)."),
     ],
     params=[
-        Param("method", "enum", default="d8", choices=["d8"], choice_labels=["D8"],
+        Param("method", "enum",
+              label="Routing", default="d8", choices=["d8"], choice_labels=["D8"],
               doc="Flow routing: each cell drains to its steepest neighbour."),
         Param("sink_resolution", "enum", default="carve", choices=["carve", "lcat"],
               choice_labels=["Carve", "Least-cost (lcat)"],
               doc="How flow leaves filled sinks and flats."),
     ],
-    outputs=[Output("flow", "topotoolbox.FlowObject", doc="Flow directions, reusable by later runs.")],
+    outputs=[Output("flow", "topotoolbox.FlowObject", doc="Flow network: D8 receivers in topological order, sinks resolved; reused by later runs.")],
     impl="library",
 )
 def flow_object(grid, bc=None, method="d8", sink_resolution="carve"):
@@ -677,19 +712,23 @@ def flow_object(grid, bc=None, method="d8", sink_resolution="carve"):
 
 @process(
     id="topotoolbox.stream_object",
+    category="Stream",
     label="Stream network (TopoToolbox)",
     inputs=[
-        Port("flow", "topotoolbox.FlowObject", doc="Flow directions to trace streams on."),
-        Port("stream_pixels", "topotoolbox.GridObject", optional=True,
+        Port("flow", "topotoolbox.FlowObject",
+             label="Flow object", doc="Flow directions to trace streams on."),
+        Port("stream_pixels", "topotoolbox.GridObject", label="Stream cells", optional=True,
              doc="Cells that are streams (nonzero); replaces the threshold."),
-        Port("channelheads", "geopoints", optional=True,
+        Port("channelheads", "geopoints", label="Channel heads (points)", optional=True,
              doc="Channel heads: keeps the streams downstream of them; " + _POINTS_DOC),
     ],
     params=[
-        Param("units", "enum", default="pixels", choices=["pixels", "mapunits", "m2", "km2"],
+        Param("units", "enum",
+              label="Threshold units", default="pixels",
+              choices=["pixels", "mapunits", "m2", "km2"],
               choice_labels=["Cells", "Map units²", "m²", "km²"],
               doc="Units of the threshold."),
-        Param("threshold", "float", default=0.0, min=0.0,
+        Param("threshold", "float", label="Threshold (0: automatic)", default=0.0, min=0.0,
               doc="Upstream area needed to be a stream; 0 = automatic (1 % of the mean "
                   "grid side, squared, in cells)."),
     ],
@@ -712,9 +751,13 @@ def stream_object(flow, stream_pixels=None, channelheads=None, units="pixels", t
 
 @process(
     id="topotoolbox.klargestconncomps",
+    category="Stream",
     label="Largest stream networks",
-    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network.")],
-    params=[Param("k", "int", default=1, min=1, doc="Number of networks kept, largest first.")],
+    inputs=[Port("stream", "topotoolbox.StreamObject",
+                 label="Stream network", doc="Stream network.")],
+    params=[Param("k", "int",
+                  label="Networks kept", default=1, min=1,
+                  doc="Number of networks kept, largest first.")],
     outputs=[Output("largest", "topotoolbox.StreamObject", doc="The k largest networks.")],
     impl="library",
 )
@@ -728,9 +771,10 @@ def klargestconncomps(stream, k=1):
 
 @process(
     id="topotoolbox.trunk",
+    category="Stream",
     label="Trunk streams",
     inputs=[
-        Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
+        Port("stream", "topotoolbox.StreamObject", label="Stream network", doc="Stream network."),
         Port("flow_accumulation", "topotoolbox.GridObject", optional=True,
              doc="Flow accumulation: the trunk follows the largest one instead of the longest path."),
     ],
@@ -747,9 +791,13 @@ def trunk(stream, flow_accumulation=None):
 
 @process(
     id="topotoolbox.upstreamto",
+    category="Stream",
     label="Streams upstream of points",
-    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
-            Port("points", "geopoints", doc="Points on stream cells (e.g. outlets); " + _POINTS_DOC)],
+    inputs=[Port("stream", "topotoolbox.StreamObject",
+                 label="Stream network", doc="Stream network."),
+            Port("points", "geopoints",
+                 label="Points on streams",
+                 doc="Points on stream cells (e.g. outlets); " + _POINTS_DOC)],
     outputs=[Output("upstream", "topotoolbox.StreamObject", doc="The streams upstream of the points.")],
     impl="library",
 )
@@ -763,9 +811,12 @@ def upstreamto(stream, points):
 
 @process(
     id="topotoolbox.downstreamto",
+    category="Stream",
     label="Streams downstream of points",
-    inputs=[Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
-            Port("points", "geopoints", doc="Points on stream cells; " + _POINTS_DOC)],
+    inputs=[Port("stream", "topotoolbox.StreamObject",
+                 label="Stream network", doc="Stream network."),
+            Port("points", "geopoints",
+                 label="Points on streams", doc="Points on stream cells; " + _POINTS_DOC)],
     outputs=[Output("downstream", "topotoolbox.StreamObject", doc="The streams downstream of the points.")],
     impl="library",
 )
@@ -779,31 +830,35 @@ def downstreamto(stream, points):
 
 @process(
     id="topotoolbox.stream_lines",
+    category="Stream",
     label="Stream lines",
     inputs=[
-        Port("stream", "topotoolbox.StreamObject", doc="Stream network."),
-        Port("dem", "topotoolbox.GridObject", optional=True,
+        Port("stream", "topotoolbox.StreamObject", label="Stream network", doc="Stream network."),
+        Port("dem", "topotoolbox.GridObject", label="DEM", optional=True,
              doc="Elevation; needed for gradient and ksn."),
-        Port("flow", "topotoolbox.FlowObject", optional=True,
+        Port("flow", "topotoolbox.FlowObject", label="Flow object", optional=True,
              doc="Flow directions of the network; needed for drainage area, ksn and chi."),
     ],
     params=[
         Param("stream_order", "enum", default="strahler", choices=["none", "strahler", "shreve"],
               choice_labels=["None", "Strahler", "Shreve"], doc="Stream order of every vertex."),
         Param("drainage_area", "bool", default=True, doc="Add the drainage area (m², needs the flow)."),
-        Param("upstream_distance", "bool", default=True,
+        Param("upstream_distance", "bool", label="Distance from head", default=True,
               doc="Add the distance from the farthest channel head (map units)."),
-        Param("downstream_distance", "bool", default=False,
+        Param("downstream_distance", "bool", label="Distance to outlet", default=False,
               doc="Add the distance to the outlet (map units)."),
         Param("gradient", "bool", default=False, doc="Add the channel gradient (needs the DEM)."),
-        Param("ksn", "bool", default=False,
+        Param("ksn", "bool", label="ksn", default=False,
               doc="Add the normalised steepness index (needs the DEM and the flow)."),
         Param("chi", "bool", default=False, doc="Add chi (needs the flow)."),
-        Param("impose", "bool", default=False,
+        Param("impose", "bool", label="Impose minima", default=False,
               doc="Gradient and ksn: impose downstream minima first (no negative slopes)."),
-        Param("theta", "float", default=0.45, min=0.0, doc="ksn: reference concavity."),
-        Param("mn", "float", default=0.45, min=0.0, doc="chi: m/n ratio."),
-        Param("a0", "float", default=1e6, min=0.0, doc="chi: reference area (map units²)."),
+        Param("theta", "float",
+              label="ksn concavity", default=0.45, min=0.0, doc="ksn: reference concavity."),
+        Param("mn", "float", label="Chi m/n", default=0.45, min=0.0, doc="chi: m/n ratio."),
+        Param("a0", "float",
+              label="Chi reference area A0", default=1e6, min=0.0,
+              doc="chi: reference area (map units²)."),
     ],
     outputs=[Output("lines", "geolines",
                     doc="The streams as lines, one vertex per stream cell, with the chosen values "

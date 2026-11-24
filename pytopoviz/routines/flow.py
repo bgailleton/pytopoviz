@@ -11,12 +11,13 @@ from ..core.registries import PROCESSES
 
 @process(
     id="pytopoviz.flow_accumulation_lsdtt3",
+    category="Flow",
     label="Flow accumulation",
     inputs=[
-        Port("dem", "lsdtt3.Raster", doc="Elevation to route water over."),
-        Port("filled_dem", "lsdtt3.Raster", optional=True,
+        Port("dem", "lsdtt3.Raster", label="DEM", doc="Elevation to route water over."),
+        Port("filled_dem", "lsdtt3.Raster", label="Own filled DEM", optional=True,
              doc="Your own depression-free DEM; skips the filling step."),
-        Port("flow_directions", "lsdtt3.FlowInfo", optional=True,
+        Port("flow_directions", "lsdtt3.FlowInfo", label="Own flow object", optional=True,
              doc="Flow directions already computed; skips filling and routing."),
         Port("weights", "lsdtt3.Raster", optional=True,
              doc="Amount each cell contributes (e.g. rainfall); replaces the units choice."),
@@ -27,7 +28,7 @@ from ..core.registries import PROCESSES
         Param("boundary_conditions", "lsdtt3.boundary_conditions", default="oooo"),
         Param("min_slope", "float", default=1e-4, min=0.0,
               doc="Small slope given to filled areas so water keeps flowing."),
-        Param("allow_pits_as_outlets", "bool", default=False,
+        Param("allow_pits_as_outlets", "bool", label="Pits as outlets", default=False,
               doc="Let leftover pits end the flow instead of failing."),
     ],
     outputs=[

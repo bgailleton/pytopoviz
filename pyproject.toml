@@ -25,7 +25,6 @@ dependencies = [
     "geopandas",
     "shapely",
     "clarabel",
-    "pyvista",
     "numba",
     "zarr>=3"
 ]
@@ -34,6 +33,10 @@ keywords = ["TopoToolbox", "visualization", "PyVista"]
 classifiers = []
 
 [project.optional-dependencies]
+# Legacy 3D figures (pytopoviz.legacy.fig3d) only.
+legacy3d = [
+    "pyvista"
+]
 docs = [
     "sphinx",
     "sphinx_rtd_theme"

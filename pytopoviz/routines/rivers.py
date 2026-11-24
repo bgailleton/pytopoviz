@@ -13,49 +13,63 @@ _LINES_DOC = "The channel network as lines, with per-link and per-vertex values.
 
 @process(
     id="pytopoviz.river_network_lsdtt3",
+    category="Stream",
     label="River network",
     inputs=[
-        Port("dem", "lsdtt3.Raster", doc="Elevation to trace channels on."),
-        Port("filled_dem", "lsdtt3.Raster", optional=True,
+        Port("dem", "lsdtt3.Raster", label="DEM", doc="Elevation to trace channels on."),
+        Port("filled_dem", "lsdtt3.Raster", label="Own filled DEM", optional=True,
              doc="Your own depression-free DEM; skips the filling step."),
-        Port("flow_directions", "lsdtt3.FlowInfo", optional=True,
+        Port("flow_directions", "lsdtt3.FlowInfo", label="Own flow object", optional=True,
              doc="Flow directions already computed; skips filling and routing."),
-        Port("sources", "geopoints", optional=True,
+        Port("sources", "geopoints", label="Channel heads (points)", optional=True,
              doc="Channel heads to start from (e.g. drawn); replaces the head detection."),
-        Port("outlets", "geopoints", optional=True, doc="Where channels stop."),
+        Port("outlets", "geopoints",
+             label="Outlets (points)", optional=True, doc="Where channels stop."),
     ],
     params=[
         Param("boundary_conditions", "lsdtt3.boundary_conditions", default="oooo"),
         Param("min_slope", "float", default=1e-4, min=0.0,
               doc="Small slope given to filled areas so water keeps flowing."),
-        Param("allow_pits_as_outlets", "bool", default=False,
+        Param("allow_pits_as_outlets", "bool", label="Pits as outlets", default=False,
               doc="Let leftover pits end the flow instead of failing."),
-        Param("heads_method", "enum", default="threshold", choices=["threshold", "wiener"],
+        Param("heads_method", "enum",
+              label="Channel heads", default="threshold", choices=["threshold", "wiener"],
               choice_labels=["Drainage threshold", "Wiener curvature"],
               doc="Channels from every cell above the threshold, or from heads found by "
                   "Wiener-filtered curvature (projected metre DEM). Unused with sources."),
-        Param("threshold_contributing_pixels", "int", default=1000, min=1,
+        Param("threshold_contributing_pixels", "int",
+              label="Threshold", unit="cells", default=1000, min=1,
               doc="Upstream cells needed to be a channel."),
-        Param("pruning_drainage_area_m2", "float", default=1000.0, min=0.0,
+        Param("pruning_drainage_area_m2", "float",
+              label="Wiener: pruning area", unit="m²", default=1000.0, min=0.0,
               doc="Wiener heads: channels draining less than this are pruned (m²)."),
-        Param("surface_fitting_radius_metres", "float", default=6.0, min=0.0,
+        Param("surface_fitting_radius_metres", "float",
+              label="Wiener: fitting radius", unit="m", default=6.0, min=0.0,
               doc="Wiener heads: radius of the surface fitted for curvature (m, at least a cell)."),
-        Param("connected_components_threshold_pixels", "int", default=100, min=0,
+        Param("connected_components_threshold_pixels", "int",
+              label="Wiener: smallest patch", unit="cells", default=100, min=0,
               doc="Wiener heads: channel patches smaller than this are dropped (cells)."),
         Param("snap_sources", "bool", default=True, doc="Move each source to the nearest channel cell."),
-        Param("source_snap_max_radius_pixels", "int", default=25, min=0,
+        Param("source_snap_max_radius_pixels", "int",
+              label="Source snap radius", unit="cells", default=25, min=0,
               doc="Farthest a source moves when snapped (cells)."),
-        Param("outlet_snap_max_distance_metres", "float", default=0.0, min=0.0,
+        Param("outlet_snap_max_distance_metres", "float",
+              label="Outlet snap distance", unit="m", default=0.0, min=0.0,
               doc="Farthest an outlet moves onto a channel (m)."),
         Param("chi", "bool", default=True, doc="Add chi to every vertex."),
-        Param("m_over_n", "float", default=0.45, min=0.0, doc="Concavity m/n of chi."),
-        Param("reference_area", "float", default=1.0, min=0.0,
+        Param("m_over_n", "float",
+              label="Concavity m/n", default=0.45, min=0.0, doc="Concavity m/n of chi."),
+        Param("reference_area", "float",
+              label="Chi reference area A0", unit="m²", default=1.0, min=0.0,
               doc="Reference drainage area A0 of chi (m²)."),
-        Param("ksn", "bool", default=False,
+        Param("ksn", "bool", label="ksn", default=False,
               doc="Add ksn to every vertex, from piecewise fits of the chi-elevation profiles."),
-        Param("critical_divergence_metres", "float", default=5.0, min=0.0,
+        Param("critical_divergence_metres", "float",
+              label="ksn split misfit", unit="m", default=5.0, min=0.0,
               doc="ksn: largest elevation misfit before a profile segment is split (m)."),
-        Param("mainstem", "enum", default="max_flow_length", choices=["max_flow_length", "max_chi"],
+        Param("mainstem", "enum",
+              label="ksn main stem", default="max_flow_length",
+              choices=["max_flow_length", "max_chi"],
               choice_labels=["Longest flow path", "Largest chi"],
               doc="ksn: how each basin's main stem is picked for the fit."),
     ],
@@ -133,67 +147,68 @@ def river_network_lsdtt3(
 
 @process(
     id="pytopoviz.river_network_topotoolbox",
+    category="Stream",
     label="River network",
     inputs=[
-        Port("dem", "topotoolbox.GridObject", doc="Elevation to trace streams on."),
-        Port("flow_directions", "topotoolbox.FlowObject", optional=True,
-             doc="Flow directions already computed; skips routing."),
-        Port("channelheads", "geopoints", optional=True,
+        Port("flow", "topotoolbox.FlowObject", label="Flow object",
+             doc="Flow directions to trace streams on (Hydrology › Flow directions, TopoToolbox)."),
+        Port("dem", "topotoolbox.GridObject", label="DEM", optional=True,
+             doc="Elevation; needed for gradient and ksn (e.g. the one the flow object was made from)."),
+        Port("channelheads", "geopoints", label="Channel heads (points)", optional=True,
              doc="Channel heads: keeps the streams downstream of them; replaces the threshold."),
-        Port("outlets", "geopoints", optional=True,
+        Port("outlets", "geopoints", label="Outlets (points)", optional=True,
              doc="Keeps the streams upstream of these points (on stream cells)."),
     ],
     params=[
-        Param("sink_resolution", "enum", default="carve", choices=["carve", "lcat"],
-              choice_labels=["Carve", "Least-cost (lcat)"],
-              doc="How flow leaves filled sinks and flats."),
-        Param("units", "enum", default="pixels", choices=["pixels", "mapunits", "m2", "km2"],
+        Param("units", "enum",
+              label="Threshold units", default="pixels",
+              choices=["pixels", "mapunits", "m2", "km2"],
               choice_labels=["Cells", "Map units²", "m²", "km²"], doc="Units of the threshold."),
-        Param("threshold", "float", default=0.0, min=0.0,
+        Param("threshold", "float", label="Threshold (0: automatic)", default=0.0, min=0.0,
               doc="Upstream area needed to be a stream; 0 = automatic."),
-        Param("k_largest", "int", default=0, min=0,
+        Param("k_largest", "int", label="Largest networks (0: all)", default=0, min=0,
               doc="Keep the k largest networks only; 0 = all."),
-        Param("trunk", "bool", default=False, doc="Keep the trunk stream of each network only."),
+        Param("trunk", "bool",
+              label="Trunk streams only", default=False,
+              doc="Keep the trunk stream of each network only."),
         Param("stream_order", "enum", default="strahler", choices=["none", "strahler", "shreve"],
               choice_labels=["None", "Strahler", "Shreve"], doc="Stream order of every vertex."),
         Param("drainage_area", "bool", default=True, doc="Add the drainage area (m²)."),
-        Param("upstream_distance", "bool", default=True,
+        Param("upstream_distance", "bool", label="Distance from head", default=True,
               doc="Add the distance from the farthest channel head (map units)."),
-        Param("downstream_distance", "bool", default=False,
+        Param("downstream_distance", "bool", label="Distance to outlet", default=False,
               doc="Add the distance to the outlet (map units)."),
         Param("gradient", "bool", default=False, doc="Add the channel gradient."),
-        Param("ksn", "bool", default=False, doc="Add the normalised steepness index."),
+        Param("ksn", "bool",
+              label="ksn", default=False, doc="Add the normalised steepness index."),
         Param("chi", "bool", default=False, doc="Add chi."),
-        Param("impose", "bool", default=False,
+        Param("impose", "bool", label="Impose minima", default=False,
               doc="Gradient and ksn: impose downstream minima first (no negative slopes)."),
-        Param("theta", "float", default=0.45, min=0.0, doc="ksn: reference concavity."),
-        Param("mn", "float", default=0.45, min=0.0, doc="chi: m/n ratio."),
-        Param("a0", "float", default=1e6, min=0.0, doc="chi: reference area (map units²)."),
+        Param("theta", "float",
+              label="ksn concavity", default=0.45, min=0.0, doc="ksn: reference concavity."),
+        Param("mn", "float", label="Chi m/n", default=0.45, min=0.0, doc="chi: m/n ratio."),
+        Param("a0", "float",
+              label="Chi reference area A0", default=1e6, min=0.0,
+              doc="chi: reference area (map units²)."),
     ],
     outputs=[
         Output("lines", "geolines", doc=_LINES_DOC),
         Output("stream", "topotoolbox.StreamObject", doc="Stream network, reusable by later runs."),
-        Output("flow", "topotoolbox.FlowObject", doc="Flow directions, reusable by later runs."),
     ],
     impl="composite",
 )
 def river_network_topotoolbox(
-    dem, flow_directions=None, channelheads=None, outlets=None, sink_resolution="carve",
-    units="pixels", threshold=0.0, k_largest=0, trunk=False, stream_order="strahler",
+    flow, dem=None, channelheads=None, outlets=None, units="pixels", threshold=0.0, k_largest=0, trunk=False, stream_order="strahler",
     drainage_area=True, upstream_distance=True, downstream_distance=False, gradient=False,
     ksn=False, chi=False, impose=False, theta=0.45, mn=0.45, a0=1e6,
 ):
-    """The stream network of a DEM, as lines.
+    """The stream network of a flow object, as lines.
 
-    Chains topotoolbox.flow_object -> topotoolbox.stream_object ->
-    [topotoolbox.upstreamto] -> [topotoolbox.klargestconncomps] ->
-    [topotoolbox.trunk] -> topotoolbox.stream_lines. ``flow_directions``
-    skips routing.
+    Chains topotoolbox.stream_object -> [topotoolbox.upstreamto] ->
+    [topotoolbox.klargestconncomps] -> [topotoolbox.trunk] ->
+    topotoolbox.stream_lines. The flow object is made beforehand
+    (topotoolbox.flow_object).
     """
-    flow = flow_directions
-    if flow is None:
-        flow = PROCESSES.get("topotoolbox.flow_object")(
-            grid=dem, sink_resolution=sink_resolution)["flow"]
     stream = PROCESSES.get("topotoolbox.stream_object")(
         flow=flow, channelheads=channelheads, units=units, threshold=threshold)["stream"]
     if outlets is not None:
@@ -208,4 +223,4 @@ def river_network_topotoolbox(
         downstream_distance=downstream_distance, gradient=gradient, ksn=ksn, chi=chi,
         impose=impose, theta=theta, mn=mn, a0=a0,
     )["lines"]
-    return {"lines": lines, "stream": stream, "flow": flow}
+    return {"lines": lines, "stream": stream}

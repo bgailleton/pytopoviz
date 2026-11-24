@@ -1,5 +1,15 @@
 """Swath profile routines (composite processes).
 
+The two swath profiles, one per library, take the same inputs and the same
+shared parameters under the same names (Topos fills them from one form):
+the DEM, a line, optionally another grid to profile on the DEM's cells, the
+half-width and the along-track bin (a window of that length along the line;
+lsdtt3 cuts the line into bins of it, TopoToolbox slides it, a point per
+track cell). Empty sizes default to HALF_WIDTH_CELLS / ALONG_BIN_CELLS /
+CROSS_BIN_CELLS cells of the DEM. Outputs are named alike too: along_track,
+cross_track (TopoToolbox only), outline, signed_distance, then what is
+proper to each library.
+
 Author: B.G.
 """
 
@@ -9,8 +19,40 @@ from shapely.geometry import LineString
 
 from ..core import Output, Param, Port, process
 from ..core.registries import CONVERTERS, PROCESSES
+from ..geovector import GeoVector
 
 _OUTLINE_DOC = "The swath corridor: the line widened by the half-width, round ends."
+#: Default sizes, in cells of the DEM.
+HALF_WIDTH_CELLS = 100.0
+ALONG_BIN_CELLS = 10.0
+CROSS_BIN_CELLS = 1.0
+_LINE_DOC = "Line to profile along, in any CRS (reprojected to the DEM's)."
+_VALUES_DOC = "Other grid to profile on the DEM's cells (e.g. slope); the DEM itself if empty."
+_HALF_WIDTH_DOC = "Cells farther from the line are left out (map units). Empty: %g cells."
+_ALONG_BIN_DOC = ("Length of the window each along-track point gathers (map units). "
+                  "Empty: %g cells.")
+
+
+def _size(value, cells, cell_size):
+    """`value`, or `cells` cells when empty."""
+    return float(value) if value is not None else cells * float(cell_size)
+
+
+def _nth_line(lines, index):
+    """Line `index` (a feature of one part) of the lines GeoVector `lines`,
+    alone."""
+    if not 0 <= index < lines.n_features:
+        raise ValueError(f"no line {index}: the object holds {lines.n_features}")
+    p0, p1 = lines.feature_offsets[index], lines.feature_offsets[index + 1]
+    if p1 - p0 != 1:
+        raise ValueError(f"line {index} has {p1 - p0} parts; a swath needs a single line")
+    v0, v1 = lines.part_offsets[p0], lines.part_offsets[p0 + 1]
+    return GeoVector("lines", lines.xy[v0:v1], epsg=lines.epsg, crs_wkt=lines.crs_wkt)
+
+
+_LINE_INDEX = Param("line_index", "int", label="Which line", default=0, min=0,
+                    doc="The line of the object to profile along (0 = the first), when it "
+                        "holds several.")
 
 
 def _outline(line, half_width):
@@ -28,142 +70,136 @@ def _outline(line, half_width):
 
 @process(
     id="pytopoviz.swath_profile_topotoolbox",
+    category="Swath",
     label="Swath profile",
     inputs=[
-        Port("dem", "topotoolbox.GridObject", doc="Grid to profile (e.g. the DEM)."),
-        Port("track", "geolines", doc="Line to profile along, in any CRS."),
-        Port("prepared_track", "geolines", optional=True,
-             doc="Track already prepared (one vertex per cell); skips the preparation, "
-                 "track is then unused."),
-        Port("distance_map", "topotoolbox.GridObject", optional=True,
-             doc="Distance map of the prepared track; with nearest_point, skips computing them."),
-        Port("nearest_point", "topotoolbox.GridObject", optional=True,
-             doc="Nearest-vertex grid of the prepared track, given with distance_map."),
-        Port("mask", "topotoolbox.GridObject", optional=True,
-             doc="Cells to use: nonzero = used."),
+        Port("dem", "topotoolbox.GridObject", label="DEM",
+             doc="Grid the swath is laid on; profiled unless another grid is given."),
+        Port("line", "geolines", label="Line", doc=_LINE_DOC),
+        Port("values", "topotoolbox.GridObject", label="Grid to profile", optional=True,
+             doc=_VALUES_DOC),
     ],
     params=[
-        Param("half_width", "float", min=0.0,
-              doc="Swath half-width: cells farther from the track are left out (map units)."),
-        Param("bin_resolution", "float", default=10.0, min=0.0,
-              doc="Cross-track profile: width of each distance bin (map units)."),
-        Param("normalize", "bool", default=False,
-              doc="Cross-track profile relative to the mean of the cells within one bin of "
-                  "the track."),
-        Param("method", "enum", default="nearest_point", choices=["nearest_point", "windowed"],
+        _LINE_INDEX,
+        Param("half_width", "float", label="Half-width", optional=True, min=0.0,
+              doc=(_HALF_WIDTH_DOC % HALF_WIDTH_CELLS) + " Must be above 0."),
+        Param("along_bin", "float", label="Along-track bin", optional=True, min=0.0,
+              doc=(_ALONG_BIN_DOC % ALONG_BIN_CELLS) + " A point per track cell, each "
+                  "gathering the cells within half of it on either side (sliding window)."),
+        Param("cross_bin", "float", label="Cross-track bin", optional=True, min=0.0,
+              doc="Width of each distance bin of the cross-track profile (map units). "
+                  "Empty: %g cell." % CROSS_BIN_CELLS),
+        Param("method", "enum",
+              label="Along-track method", default="nearest_point",
+              choices=["nearest_point", "windowed"],
               choice_labels=["Nearest track vertex", "Oriented window"],
-              doc="Along-track profile: each point gathers the cells whose nearest track vertex "
-                  "is close to it, or the cells in a rectangle turned along the track."),
-        Param("binning_distance", "float", min=0.0,
-              doc="Along-track profile: each point gathers the cells within this distance of it "
-                  "along the track (map units)."),
-        Param("n_points_regression", "int", default=5, min=1,
+              doc="Each along-track point gathers the cells whose nearest track vertex is in "
+                  "its window, or the cells in a rectangle turned along the track."),
+        Param("n_points_regression", "int", label="Window: vertices to orient", default=5, min=1,
               doc="Oriented window: track vertices used to orient each window."),
-        Param("percentiles", "topotoolbox.percentiles", default=""),
-        Param("skip", "int", default=1, min=1,
+        Param("percentiles", "topotoolbox.percentiles", label="Extra percentiles", default=""),
+        Param("normalize", "bool", label="Cross-track relative to the line", default=False,
+              doc="Cross-track profile relative to the mean of the cells within one bin of "
+                  "the line."),
+        Param("skip", "int", label="Keep every n-th point", default=1, min=1,
               doc="Along-track profile: keep every n-th track vertex as a point."),
-        Param("return_centre_line", "bool", default=False,
-              doc="Also find the swath's centreline."),
     ],
     outputs=[
-        Output("transverse", "datatable", doc="Cross-track profile."),
-        Output("longitudinal", "datatable", doc="Along-track profile."),
-        Output("prepared", "geolines",
-               doc="The track used, one vertex per cell (reusable as prepared_track)."),
-        Output("distances", "topotoolbox.GridObject",
-               doc="Signed distance from each cell to the track (reusable as distance_map)."),
-        Output("nearest", "topotoolbox.GridObject",
-               doc="Index of each cell's nearest track vertex (reusable as nearest_point)."),
-        Output("centre_line", "geolines", optional=True,
-               doc="Centreline of the swath (when asked and the distance map was computed)."),
-        Output("dist_from_boundary", "topotoolbox.GridObject", optional=True,
-               doc="Distance from each swath cell to the swath edge (with the centreline)."),
-        Output("outline", "geopolygons", optional=True, doc=_OUTLINE_DOC),
+        Output("along_track", "datatable", doc="Along-track profile."),
+        Output("cross_track", "datatable", doc="Cross-track profile."),
+        Output("outline", "geopolygons", doc=_OUTLINE_DOC),
+        Output("signed_distance", "topotoolbox.GridObject",
+               doc="Distance of each swath cell to the line, + left, - right (map units)."),
+        Output("track", "geolines", doc="The line laid on the grid (one vertex per cell)."),
+        Output("swath_map", "topotoolbox.SwathMap",
+               doc="The swath, for the single steps (Profiles › Steps)."),
     ],
     impl="composite",
 )
 def swath_profile_topotoolbox(
-    dem, track, half_width, binning_distance, prepared_track=None, distance_map=None,
-    nearest_point=None, mask=None, bin_resolution=10.0, normalize=False, method="nearest_point",
-    n_points_regression=5, percentiles="", skip=1, return_centre_line=False,
+    dem, line, values=None, line_index=0, half_width=None, along_bin=None, cross_bin=None,
+    method="nearest_point", n_points_regression=5, percentiles="", normalize=False, skip=1,
 ):
-    """Profiles of a grid across and along a track.
+    """Profiles of a grid along and across a line.
 
-    Chains topotoolbox.prepare_track -> topotoolbox.compute_swath_distance_map
-    -> topotoolbox.transverse_swath and topotoolbox.longitudinal_swath (or
-    longitudinal_swath_windowed). ``prepared_track`` skips the preparation;
-    ``distance_map`` with ``nearest_point`` skips the distance map. ``outline``
-    is the prepared track widened by ``half_width``.
+    Lays the swath on the DEM (topotoolbox.swath_map: the line prepared, the
+    distance map), then runs topotoolbox.transverse_swath and
+    topotoolbox.longitudinal_swath (or longitudinal_swath_windowed) on the
+    grid to profile, within the half-width.
     """
-    if prepared_track is None:
-        prepared_track = PROCESSES.get("topotoolbox.prepare_track")(
-            grid=dem, track=track)["prepared_track"]
-    if distance_map is None or nearest_point is None:
-        maps = PROCESSES.get("topotoolbox.compute_swath_distance_map")(
-            grid=dem, track=prepared_track, mask=mask, half_width=half_width,
-            return_centre_line=return_centre_line)
-        distance_map, nearest_point = maps["distance_map"], maps["nearest_point"]
-    else:
-        maps = {}
-    out = {"prepared": prepared_track, "distances": distance_map, "nearest": nearest_point,
-           "centre_line": maps.get("centre_line"),
-           "dist_from_boundary": maps.get("dist_from_boundary"),
-           "outline": _outline(prepared_track, half_width)}
-
-    out["transverse"] = PROCESSES.get("topotoolbox.transverse_swath")(
-        grid=dem, distance_map=distance_map, half_width=half_width,
-        bin_resolution=bin_resolution, normalize=normalize, percentiles=percentiles)["profile"]
+    line = _nth_line(line, line_index)
+    hw = _size(half_width, HALF_WIDTH_CELLS, dem.cellsize)
+    if hw <= 0.0:
+        raise ValueError("the TopoToolbox swath needs a half-width above 0")
+    window = _size(along_bin, ALONG_BIN_CELLS, dem.cellsize)
+    grid = values if values is not None else dem
+    laid = PROCESSES.get("topotoolbox.swath_map")(grid=dem, track=line, half_width=hw)
+    sm = laid["swath_map"]
+    out = {"cross_track": PROCESSES.get("topotoolbox.transverse_swath")(
+        grid=grid, distance_map=sm.distance_map, half_width=hw,
+        bin_resolution=_size(cross_bin, CROSS_BIN_CELLS, dem.cellsize), normalize=normalize,
+        percentiles=percentiles)["profile"]}
     if method == "windowed":
         along = PROCESSES.get("topotoolbox.longitudinal_swath_windowed")(
-            grid=dem, track=prepared_track, half_width=half_width,
-            binning_distance=binning_distance, n_points_regression=n_points_regression,
-            percentiles=percentiles, skip=skip)
+            grid=grid, track=sm.track, half_width=hw, binning_distance=window / 2.0,
+            n_points_regression=n_points_regression, percentiles=percentiles, skip=skip)
     else:
         along = PROCESSES.get("topotoolbox.longitudinal_swath")(
-            grid=dem, track=prepared_track, distance_map=distance_map,
-            nearest_point=nearest_point, half_width=half_width,
-            binning_distance=binning_distance, percentiles=percentiles, skip=skip)
-    out["longitudinal"] = along["profile"]
+            grid=grid, track=sm.track, distance_map=sm.distance_map,
+            nearest_point=sm.nearest_point, half_width=hw, binning_distance=window / 2.0,
+            percentiles=percentiles, skip=skip)
+    out.update(along_track=along["profile"], outline=laid["outline"],
+               signed_distance=laid["distance_map"], track=laid["prepared"], swath_map=sm)
     return out
 
 
 @process(
     id="pytopoviz.swath_profile_lsdtt3",
+    category="Swath",
     label="Swath profile",
     inputs=[
-        Port("dem", "lsdtt3.Raster",
-             doc="Grid defining the cells and the valid area; profiled unless values are given."),
-        Port("baseline", "geolines", doc="Line to profile along, in any CRS."),
-        Port("values", "lsdtt3.Raster", optional=True,
-             doc="Other grid to profile on the same cells (e.g. slope)."),
+        Port("dem", "lsdtt3.Raster", label="DEM",
+             doc="Grid defining the cells and the valid area; profiled unless another grid "
+                 "is given."),
+        Port("line", "geolines", label="Line", doc=_LINE_DOC),
+        Port("values", "lsdtt3.Raster", label="Grid to profile", optional=True, doc=_VALUES_DOC),
     ],
     params=[
-        Param("half_width_metres", "float", default=0.0, min=0.0,
-              doc="Only cells within this distance of the line are used; 0 = every cell."),
-        Param("bin_width_metres", "float", default=1000.0, min=0.0,
-              doc="Length of each bin along the line (must be above 0)."),
+        _LINE_INDEX,
+        Param("half_width", "float", label="Half-width", optional=True, min=0.0,
+              doc=(_HALF_WIDTH_DOC % HALF_WIDTH_CELLS) + " 0: every cell."),
+        Param("along_bin", "float", label="Along-track bin", optional=True, min=0.0,
+              doc=(_ALONG_BIN_DOC % ALONG_BIN_CELLS) + " The line is cut into bins of it, "
+                  "a point per bin."),
     ],
     outputs=[
-        Output("profile", "datatable", doc="Mean and percentiles per bin along the line; x, y = the bin centre on the line."),
-        Output("along_axis", "lsdtt3.Raster", doc="Distance along the line of each swath cell (m)."),
-        Output("perpendicular_distance", "lsdtt3.Raster",
-               doc="Distance from each swath cell to the line (m)."),
-        Output("signed_perpendicular_distance", "lsdtt3.Raster",
-               doc="Same, positive left of the line, negative right (m)."),
+        Output("along_track", "datatable",
+               doc="Mean and percentiles per bin along the line; x, y = the bin centre on the line."),
         Output("outline", "geopolygons", optional=True,
                doc=_OUTLINE_DOC + " Not produced for a half-width of 0."),
+        Output("signed_distance", "lsdtt3.Raster",
+               doc="Distance of each swath cell to the line, + left, - right (m)."),
+        Output("distance", "lsdtt3.Raster", doc="Distance of each swath cell to the line (m)."),
+        Output("along_distance", "lsdtt3.Raster",
+               doc="Distance along the line of each swath cell (m)."),
     ],
     impl="composite",
 )
-def swath_profile_lsdtt3(dem, baseline, values=None, half_width_metres=0.0,
-                         bin_width_metres=1000.0):
+def swath_profile_lsdtt3(dem, line, values=None, line_index=0, half_width=None, along_bin=None):
     """Profile of a grid along a line, bin by bin.
 
     Runs lsdtt3.swath_profile (lsdtt3 has no cross-track profile). The outline
     is drawn in the DEM's CRS.
     """
-    out = PROCESSES.get("lsdtt3.swath_profile")(
-        reference=dem, baseline=baseline, values=values,
-        half_width_metres=half_width_metres, bin_width_metres=bin_width_metres)
-    out["outline"] = _outline(baseline.in_crs(dem.metadata.crs_wkt), half_width_metres)
+    line = _nth_line(line, line_index)
+    cell = dem.metadata.cell_size
+    hw = _size(half_width, HALF_WIDTH_CELLS, cell)
+    res = PROCESSES.get("lsdtt3.swath_profile")(
+        reference=dem, baseline=line, values=values, half_width_metres=hw,
+        bin_width_metres=_size(along_bin, ALONG_BIN_CELLS, cell))
+    out = {"along_track": res["profile"], "signed_distance": res["signed_perpendicular_distance"],
+           "distance": res["perpendicular_distance"], "along_distance": res["along_axis"]}
+    outline = _outline(line.in_crs(dem.metadata.crs_wkt), hw)
+    if outline is not None:
+        out["outline"] = outline
     return out

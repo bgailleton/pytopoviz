@@ -76,6 +76,88 @@ class GeoRaster:
             "crs_wkt": self.crs_wkt,
         }
 
+    def same_grid(self, meta: Dict) -> bool:
+        """True when ``meta`` (as :meth:`meta` gives) describes this grid's
+        lattice: shape, cell size, corner and CRS."""
+        return (int(meta.get("n_rows", -1)) == self.n_rows
+                and int(meta.get("n_cols", -1)) == self.n_cols
+                and np.isclose(float(meta.get("cell_size", 0.0)), self.cell_size)
+                and np.isclose(float(meta.get("x_min", 0.0)), self.x_min)
+                and np.isclose(float(meta.get("y_min", 0.0)), self.y_min)
+                and not self._other_crs(meta))
+
+    def onto(self, meta: Dict) -> "GeoRaster":
+        """This raster resampled onto the grid ``meta`` describes (reprojected
+        when its CRS differs; cells outside this raster are NaN). Values that
+        are all integers (labels, masks) take the nearest cell; else a coarser
+        target averages the cells it covers and a finer one interpolates
+        bilinearly. A raster or target without a CRS is taken to share the
+        other's."""
+        from rasterio.crs import CRS
+        from rasterio.transform import from_origin
+        from rasterio.warp import Resampling, reproject
+
+        target = GeoRaster.from_meta(np.zeros((int(meta["n_rows"]), int(meta["n_cols"]))), meta)
+        src_crs, dst_crs = self._crs(), target._crs()
+        if src_crs is None or dst_crs is None:
+            src_crs = dst_crs = src_crs or dst_crs or CRS.from_epsg(3857)
+        finite = self.z[np.isfinite(self.z)]
+        if finite.size and np.all(finite == np.round(finite)):
+            method = Resampling.nearest
+        elif target.cell_size > self.cell_size and src_crs == dst_crs:
+            method = Resampling.average
+        else:
+            method = Resampling.bilinear
+        z = np.full(target.shape, np.nan)
+        src_t = from_origin(self.x_min, self.y_max, self.cell_size, self.cell_size)
+        dst_t = from_origin(target.x_min, target.y_max, target.cell_size, target.cell_size)
+        reproject(self.z, z, src_transform=src_t, src_crs=src_crs, dst_transform=dst_t,
+                  dst_crs=dst_crs, src_nodata=np.nan, dst_nodata=np.nan, resampling=method)
+        target.z = z
+        return target
+
+    @classmethod
+    def read_file(cls, path: str) -> "GeoRaster":
+        """Reads band 1 of the raster file at ``path`` (any format GDAL opens):
+        nodata becomes NaN, CRS and origin are kept. It must be north-up with
+        square cells; anything else is refused."""
+        import rasterio
+
+        with rasterio.open(path) as src:
+            t = src.transform
+            if t.b != 0 or t.d != 0 or t.e >= 0 or not np.isclose(t.a, -t.e):
+                raise ValueError(f"{path} is not north-up with square cells: {t}")
+            z = src.read(1, masked=True).astype(np.float32).filled(np.nan)
+            epsg = src.crs.to_epsg() if src.crs else None
+            return cls(z=z, cell_size=t.a, x_min=src.bounds.left, y_min=src.bounds.bottom,
+                       epsg=epsg or 0, crs_wkt=src.crs.to_wkt() if src.crs else "")
+
+    def write_geotiff(self, path: str) -> None:
+        """Writes the grid to a GeoTIFF at ``path``: float32, nodata NaN, its
+        CRS when it has one."""
+        import rasterio
+        from rasterio.transform import from_origin
+
+        with rasterio.open(path, "w", driver="GTiff", height=self.n_rows, width=self.n_cols,
+                           count=1, dtype="float32", nodata=np.nan, crs=self._crs(),
+                           transform=from_origin(self.x_min, self.y_max, self.cell_size,
+                                                 self.cell_size)) as dst:
+            dst.write(self.z.astype(np.float32), 1)
+
+    def _crs(self):
+        """The rasterio CRS (``crs_wkt`` first, else ``epsg``); None without one."""
+        from rasterio.crs import CRS
+
+        if self.crs_wkt:
+            return CRS.from_wkt(self.crs_wkt)
+        return CRS.from_epsg(self.epsg) if self.epsg else None
+
+    def _other_crs(self, meta: Dict) -> bool:
+        other = GeoRaster(np.zeros((1, 1)), epsg=meta.get("epsg", 0),
+                          crs_wkt=meta.get("crs_wkt", ""))._crs()
+        mine = self._crs()
+        return mine is not None and other is not None and mine != other
+
     @classmethod
     def from_meta(cls, z: np.ndarray, meta: Optional[Dict] = None) -> "GeoRaster":
         """Inverse of :meth:`meta`; missing keys fall back to defaults."""

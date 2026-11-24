@@ -27,7 +27,6 @@ pip install .
 | `topotoolbox >= 0.0.7` | Core grid and analysis objects |
 | `numpy >= 1.23.5` | Array operations |
 | `matplotlib` | 2D figure rendering |
-| `pyvista` | 3D figure rendering |
 | `scipy` | Spatial filters (e.g. Gaussian smooth) |
 | `numba` | JIT-compiled processing kernels |
 | `cmcrameri` | Perceptually uniform scientific colormaps |
@@ -35,7 +34,7 @@ pip install .
 | `geopandas` / `shapely` | Vector geometry support |
 | `clarabel` | Quadratic programming solver |
 
-Optional extras: `pip install "pytopoviz[docs]"` (Sphinx) or `pip install "pytopoviz[test]"` (pytest).
+Optional extras: `pip install "pytopoviz[legacy3d]"` (pyvista, for the legacy 3D figures), `pip install "pytopoviz[docs]"` (Sphinx) or `pip install "pytopoviz[test]"` (pytest).
 
 **2D figure:**
 

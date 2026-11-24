@@ -12,6 +12,8 @@ Author: B.G.
 
 from __future__ import annotations
 
+import inspect
+
 from typing import Dict, List, Optional, Sequence
 
 from .converter import ConverterRegistry
@@ -34,7 +36,11 @@ def _type_field(types: TypeRegistry, type_ref: Sequence[str]) -> Dict:
 
 
 def _with_doc(types: TypeRegistry, d: Dict, member) -> Dict:
-    """The member's doc, else its type's (single-type members only)."""
+    """The member's doc, else its type's (single-type members only); and
+    its label and unit when set."""
+    for key in ("label", "unit", "show_if", "group"):
+        if getattr(member, key, None):
+            d[key] = getattr(member, key)
     doc = member.doc
     if not doc and len(member.types) == 1 and types.has(member.types[0]):
         doc = types.get(member.types[0]).doc
@@ -71,6 +77,8 @@ def _param_dict(types: TypeRegistry, param: Param) -> Dict:
 def _output_dict(types: TypeRegistry, out: Output) -> Dict:
     d = _type_field(types, out.types)
     d.update(name=out.name, optional=out.optional)
+    if out.switch is not None:
+        d["switch"] = out.switch
     return _with_doc(types, d, out)
 
 
@@ -80,6 +88,7 @@ def process_contract(types: TypeRegistry, proc) -> Dict:
         "id": spec.id,
         "label": spec.label,
         "description": spec.description,
+        "category": spec.category,
         "callable": spec.impl,
         "describe": proc.describable,
         "inputs": [_port_dict(types, p) for p in spec.inputs],
@@ -87,8 +96,14 @@ def process_contract(types: TypeRegistry, proc) -> Dict:
         "outputs": [_output_dict(types, o) for o in spec.outputs],
     }
     if spec.id in RUNNERS:
-        # A live runner exists (see core.runner): its params fixed at opening.
-        entry["runner"] = {"config": list(RUNNERS[spec.id].config)}
+        # A live runner exists (see core.runner): its params fixed at opening
+        # and the axis of its coordinate.
+        cls = RUNNERS[spec.id]
+        entry["runner"] = {"config": list(cls.config), "axis": cls.axis, "actions": [
+            {"name": name, "label": label,
+             "point": "x" in inspect.signature(getattr(cls, name)).parameters,
+             "doc": (inspect.getdoc(getattr(cls, name)) or "").split("\n\n")[0].replace("\n", " ")}
+            for name, label in cls.actions.items()]}
     return entry
 
 
@@ -109,5 +124,15 @@ def build_contract(
         "converters": [
             {"from": c.from_type, "to": c.to_type} for c in converters
         ],
-        "processes": [process_contract(types, p) for p in processes],
+        "processes": [process_contract(types, p) for p in processes
+                      if _types_known(types, p.spec)],
     }
+
+
+def _types_known(types: TypeRegistry, spec) -> bool:
+    """Whether every type of ``spec``'s inputs, params and outputs is
+    registered. A routine over a library whose adapter was skipped (not
+    installed) names types nobody registered: it cannot run, and is left out
+    of the contract."""
+    members = list(spec.inputs) + list(spec.params) + list(spec.outputs)
+    return all(types.has(t) for m in members for t in m.types)

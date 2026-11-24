@@ -56,6 +56,55 @@ def test_tree_series_and_spill(tmp_path):
     assert len(s) == 0 and s.disk_used() == 0 and list(store._root.array_keys()) == []
 
 
+def test_changes_and_running_totals(tmp_path):
+    s = Session(TYPES, CONVERTERS, store=ZarrStore(str(tmp_path / "c.zarr")))
+
+    def check():
+        # Running totals equal a fresh sum, overall and per group.
+        rows = s.items()
+        values = [r for r in rows if r["type_id"] != GROUP]
+        assert s.memory_used() == sum(r["nbytes"] for r in values if r["resident"])
+        assert s.disk_used() == sum(r["disk_bytes"] for r in values)
+        for g in (r for r in rows if r["type_id"] == GROUP):
+            under = [r for r in s.items(s.lookup(g["id"])) if r["type_id"] != GROUP]
+            assert g["nbytes"] == sum(r["nbytes"] for r in under if r["resident"])
+            assert g["disk_bytes"] == sum(r["disk_bytes"] for r in under)
+
+    a, b = s.group("a"), s.group("b")
+    sub = s.group("sub", parent=a)
+    x = s.put(_geo(1), name="x", parent=sub)
+    y = s.put(_geo(2), name="y", parent=b)
+    check()
+    full = s.changes()
+    assert [r["name"] for r in full["items"]] == ["a", "sub", "x", "b", "y"]
+    assert full["roots"] == [a.id, b.id] and full["removed"] == []
+    assert s.item(a)["children"] == [sub.id]
+
+    rev = full["revision"]
+    s.spill(sub)
+    check()
+    assert {r["name"] for r in s.changes(rev)["items"]} == {"a", "sub", "x"}
+
+    rev = s.revision
+    s.move(sub, b)
+    check()
+    ch = s.changes(rev)
+    assert {r["name"] for r in ch["items"]} == {"a", "b", "sub"}
+    assert s.item(b)["children"] == [y.id, sub.id] and s.item(a)["children"] == []
+
+    rev = s.revision
+    s.get(x)
+    s.release(y)
+    check()
+    ch = s.changes(rev)
+    assert ch["removed"] == [y.id] and {r["name"] for r in ch["items"]} == {"b", "sub", "x"}
+    assert s.changes(s.revision) == {"items": [], "removed": [], "roots": [a.id, b.id],
+                                     "revision": s.revision}
+    s.release(b)
+    s.release(a)
+    assert s.memory_used() == 0 and s.disk_used() == 0
+
+
 def test_lsdtt3_raster_spills_via_georaster(tmp_path):
     pytest.importorskip("lsdtt3")
     s = Session(TYPES, CONVERTERS, store=ZarrStore(str(tmp_path / "c.zarr")))
@@ -109,3 +158,50 @@ def test_series_table_stats_and_points():
     assert table.columns["time"].tolist() == [1.0, 2.0]
     assert table.columns["h max"].tolist() == [63.0, 126.0]
     assert table.columns["h at point 1"].tolist() == [1.0, 2.0]
+
+
+def test_series_profile_heatmap():
+    import json
+
+    from pytopoviz.datatable import DataTable
+    from pytopoviz.series_table import series_profile
+
+    @process(id="test.catalog_profile", inputs=[Port("dem", "georaster")],
+             params=[Param("k", "float", default=1.0)], outputs=[Output("profile", "datatable")])
+    def profile(dem, k):
+        x = np.arange(dem.z.shape[1]) * dem.cell_size
+        return {"profile": DataTable({"d": x, "mean": dem.z.mean(axis=0) * k},
+                                     roles={"d": "x"})}
+
+    s = Session(TYPES, CONVERTERS)
+    series = s.group("run", axis="time")
+    for t in (1.0, 2.0, 3.0):
+        record(s, series, {"h": _geo(t, 4)}, t)
+    table = series_profile(s, series, "h", profile, "dem", "profile", params={"k": 2.0})
+    hm = table.heatmap
+    assert hm["y"] == [1.0, 2.0, 3.0] and hm["y_name"] == "time"
+    assert [table.columns[c][0] for c in hm["columns"]] == [2.0, 4.0, 6.0]
+    assert table.columns["d"].tolist() == [0.0, 10.0, 20.0, 30.0]
+    again = DataTable.from_meta(table.to_array(), json.loads(json.dumps(table.meta())))
+    assert again.heatmap == hm
+
+
+def test_replace_keeps_id_and_sources(tmp_path):
+    store = ZarrStore(str(tmp_path / "c.zarr"))
+    one = _geo(0).z.nbytes
+    s = Session(TYPES, CONVERTERS, store=store, memory_budget=10 * one)
+    dem = s.put(_geo(1.0), name="dem")
+    made = s.put(_geo(2.0), name="slope", sources={"dem": dem.id})
+    assert s.item(made)["sources"] == {"dem": dem.id} and s.item(dem)["sources"] == {}
+    s.spill(dem)
+    rev = s.revision
+    h = s.replace(dem, _geo(3.0, 32))
+    assert h.id == dem.id and h.name == "dem" and h.type_id == "georaster"
+    assert s.item(h)["rev"] > rev and s.item(h)["resident"] and s.item(h)["disk_bytes"] == 0
+    assert float(s.get(h).z[0, 0]) == 3.0 and s.disk_used() == 0
+    assert s.memory_used() == one + _geo(0, 32).z.nbytes
+    # The sources stay as recorded, also once the source is released.
+    s.release(dem)
+    assert s.item(made)["sources"] == {"dem": dem.id}
+    with pytest.raises(SessionError):
+        s.replace(s.group("g"), _geo(0.0))

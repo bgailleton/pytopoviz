@@ -228,3 +228,48 @@ def test_graphflood_runner_continues_across_advances():
     assert list(out["report"].columns["step"]) == [5.0, 10.0, 15.0, 20.0]
     once = PROCESSES.get("pyfastflow.graphflood")(dem=dem, solver="explicit", dt=0.5, steps=20)
     assert np.allclose(out["water_depth"].z, once["water_depth"].z, atol=1e-6, equal_nan=True)
+
+
+needs_fusw = pytest.mark.skipif("pyfastflow.fusw_flood" not in PROCESSES,
+                                reason="pyfastflow FuswProgram not available")
+
+
+@needs_fusw
+def test_fusw_flood_outputs_chain_and_inflow_line():
+    _gpu()
+    from pytopoviz.core import RUNNERS
+    from pytopoviz.geovector import GeoVector
+
+    dem = _flood_dem(nodata=True)
+    run = PROCESSES.get("pyfastflow.fusw_flood")
+    flags = {f"return_{r}": True for r in ("velocity", "unit_discharge", "discharge",
+                                           "water_surface", "max_depth", "shear_friction",
+                                           "shear_surface", "froude", "acceleration", "state",
+                                           "report")}
+    out = run(dem=dem, duration=300.0, report_every=100.0,
+              probes=GeoVector("points", np.array([[300.0, 250.0]])), **flags)
+    assert {"water_depth", "speed", "velocity_east", "velocity_north", "froude",
+            "acceleration_ratio", "state", "report", "probe_table"} <= set(out)
+    assert np.isnan(out["water_depth"].z[:4, :4]).all()
+    report = out["report"].columns
+    assert list(report["time"]) == [100.0, 200.0, 300.0]
+    assert abs(report["error"][-1]) < 1e-3 * report["rain"][-1]
+    # Fixed dt: two chained halves equal one run.
+    kw = dict(time_step="fixed", dt=0.5, rainfall=100.0)
+    whole = run(dem=dem, duration=100.0, **kw)
+    half = run(dem=dem, duration=50.0, return_state=True, **kw)
+    rest = run(dem=dem, previous_state=half["state"], duration=50.0, **kw)
+    assert np.allclose(whole["water_depth"].z, rest["water_depth"].z, atol=1e-6, equal_nan=True)
+    # The runner continues the same way across advances.
+    spec = run.spec
+    params = {p.name: p.default_value for p in spec.params if p.has_default}
+    params.update(kw, duration=50.0)
+    with RUNNERS["pyfastflow.fusw_flood"]({"dem": dem}, params) as live:
+        live.advance(params)
+        two = live.advance(params)
+    assert np.allclose(whole["water_depth"].z, two["water_depth"].z, atol=1e-6, equal_nan=True)
+    # An inflow line along the south edge brings exactly its discharge.
+    line = GeoVector("lines", np.array([[100.0, 2.0], [500.0, 2.0]]))
+    fed = run(dem=dem, duration=100.0, rainfall=0.0, inflow_lines=line,
+              inflow_discharge=2.0, south_boundary="wall", return_report=True)
+    assert fed["report"].columns["out_inflow"][-1] == pytest.approx(-200.0, rel=1e-4)

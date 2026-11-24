@@ -28,22 +28,24 @@ def record(
     fields: Optional[Iterable[str]] = None,
     name: Optional[str] = None,
     provenance: Optional[str] = None,
+    sources: Optional[Dict[str, str]] = None,
 ) -> DataHandle:
     """Adds a frame at ``coord`` (on the series' axis) holding ``outputs``
     (name -> value; ``None`` values skipped), only the names in ``fields``
-    when given. ``type_ids`` names a value's type when it can't be identified."""
+    when given. ``type_ids`` names a value's type when it can't be identified;
+    ``sources`` (port -> item id): what the frame was made from."""
     axis = session.item(series).get("axis")
     if series.type_id != GROUP or not axis:
         raise SessionError(f"{series!r} is not a series (a group with an axis)")
     keep = None if fields is None else set(fields)
     frame = session.group(name or f"{axis} = {_fmt(coord)}", parent=series,
-                          coord={axis: coord}, provenance=provenance)
+                          coord={axis: coord}, provenance=provenance, sources=sources)
     types = type_ids or {}
     for oname, value in outputs.items():
         if value is None or (keep is not None and oname not in keep):
             continue
         session.put(value, type_id=types.get(oname), name=oname, parent=frame,
-                    provenance=provenance)
+                    provenance=provenance, sources=sources)
     return frame
 
 
@@ -78,18 +80,21 @@ def sweep(
     parent: Optional[DataHandle] = None,
     fields: Optional[Iterable[str]] = None,
     converters=None,
+    sources: Optional[Dict[str, str]] = None,
 ) -> DataHandle:
     """Runs ``process`` once per value of its param ``param`` (``inputs``:
     port -> value, ``params``: the other params over their defaults) and
     returns the series (axis ``param``) of the runs' outputs, one frame per
     value. ``converters`` (default: the session's) coerces the inputs to the
-    ports' types."""
+    ports' types. ``sources`` (port -> item id): the stored items the inputs
+    are, recorded on the series and its frames."""
     spec = process.spec
     spec.param(param)  # raises on an unknown name
     conv = converters if converters is not None else session._converters
     series = session.group(name or f"{spec.label or spec.id}: {param} sweep", parent=parent,
                            axis=param, provenance=spec.id,
-                           info={"process": spec.id, "params": dict(params or {})})
+                           info={"process": spec.id, "params": dict(params or {})},
+                           sources=sources)
     kwargs: Dict[str, object] = {}
     for port in spec.inputs:
         if port.name in (inputs or {}):
@@ -108,7 +113,7 @@ def sweep(
             elif p.has_default:
                 call[p.target] = p.default_value
         record(session, series, process(**call), v, type_ids=types, fields=fields,
-               provenance=spec.id)
+               provenance=spec.id, sources=sources)
     progress.report(n, n, f"{param} sweep")
     return series
 

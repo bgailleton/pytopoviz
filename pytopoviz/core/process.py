@@ -18,6 +18,10 @@ or a tuple/list in declared order.
 
 ``description`` defaults to the decorated function's docstring.
 
+``category`` is the family the process belongs to (e.g. "Flow", "Stream",
+"Swath"), for frontends grouping processes in menus; empty or left out ->
+"Misc.".
+
 ``describe`` is an optional callable taking the same keyword arguments as the
 process: it says, cheaply and without running it, what a run would produce (grid
 shape, download size...), as a JSON-serialisable dict. Frontends call it to
@@ -30,13 +34,16 @@ from __future__ import annotations
 
 import functools
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .errors import RegistrationError, ValidationError
 from .kinds import is_data_kind, is_param_kind
 from .ports import Output, Param, Port
 from .types import TypeRegistry
+
+
+DEFAULT_CATEGORY = "Misc."
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,7 @@ class ProcessSpec:
     outputs: Tuple[Output, ...]
     impl: str  # "library" | "composite"
     description: str = ""
+    category: str = DEFAULT_CATEGORY
 
     def input(self, name: str) -> Port:
         for p in self.inputs:
@@ -187,6 +195,7 @@ def make_spec(
     outputs: Optional[Sequence[Output]] = None,
     impl: str = "composite",
     description: str = "",
+    category: Optional[str] = None,
 ) -> ProcessSpec:
     if not id or not isinstance(id, str):
         raise RegistrationError("process id must be a non-empty string")
@@ -204,6 +213,8 @@ def make_spec(
                 f"process {id!r}: param {p.name!r} needs one choice label per choice"
             )
 
+    outputs = tuple(_link_switch(id, o, params) for o in outputs)
+
     seen = set()
     for item in (*inputs, *params, *outputs):
         if item.name in seen:
@@ -220,7 +231,28 @@ def make_spec(
         outputs=outputs,
         impl=impl,
         description=description or "",
+        category=(category or "").strip() or DEFAULT_CATEGORY,
     )
+
+
+def _link_switch(pid: str, out: Output, params: Sequence[Param]) -> Output:
+    """``out`` with its switch: the one it declares (checked: a bool param of
+    the process, on an optional output), else ``return_<name>`` when the
+    process has that bool param and the output is optional."""
+    bools = {p.name for p in params if p.types == ("bool",)}
+    if out.switch is not None:
+        if out.switch not in bools:
+            raise RegistrationError(
+                f"process {pid!r}: output {out.name!r} switch {out.switch!r} is not a bool param"
+            )
+        if not out.optional:
+            raise RegistrationError(
+                f"process {pid!r}: output {out.name!r} has a switch but is not optional"
+            )
+        return out
+    if out.optional and f"return_{out.name}" in bools:
+        return replace(out, switch=f"return_{out.name}")
+    return out
 
 
 def process(
@@ -233,6 +265,7 @@ def process(
     registry: Optional[ProcessRegistry] = None,
     description: Optional[str] = None,
     describe: Optional[Callable] = None,
+    category: Optional[str] = None,
 ) -> Callable[[Callable], Process]:
     """Decorator turning a function into a registered Process.
 
@@ -242,7 +275,7 @@ def process(
 
     def decorate(fn: Callable) -> Process:
         desc = description if description is not None else (inspect.getdoc(fn) or "")
-        spec = make_spec(id, label, inputs, params, outputs, impl, desc)
+        spec = make_spec(id, label, inputs, params, outputs, impl, desc, category)
         proc = Process(fn, spec, describe)
         target = registry if registry is not None else DEFAULT_PROCESSES
         target.add(proc)

@@ -11,6 +11,7 @@ from ..core.registries import PROCESSES
 
 @process(
     id="pytopoviz.load_and_smooth",
+    category="Input",
     label="Load sample DEM and smooth",
     params=[
         Param("name", "string", default="bigtujunga",
