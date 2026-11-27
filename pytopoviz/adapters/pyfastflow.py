@@ -9,8 +9,6 @@ state outlives a call; results cross back as numpy-backed types.
   ``compute_landscape`` in pyfastflow's ``examples/saleve_app.py`` (uplift /
   erodibility fields from noise stacks: Perlin, ridged, Worley, gradient;
   white-noise initial surface, one steady multigrid solve).
-  Optional post-process: the multi-scale erosion of Schott et al. (2024)
-  (``pyfastflow.experimental.mserosion``, a port of its release code).
 - ``pyfastflow.perlin_surface``: Perlin noise surface with an optional
   southward regional slope (the starting surface of pyfastflow's GOLEM
   examples).
@@ -45,9 +43,6 @@ import numpy as np
 import pyfastflow  # noqa: F401  (hard import: the adapter is skipped without it)
 from pyfastflow.core import Backend
 from pyfastflow.experimental.golem import GolemNoSedProgram
-from pyfastflow.experimental.mserosion import PRESET as MSE_PRESET
-from pyfastflow.experimental.mserosion import amplify as mse_amplify
-from pyfastflow.experimental.mserosion import upsample_x2 as mse_upsample_x2
 try:  # GraphFlood API is being reworked in pyfastflow; skip it, keep the rest
     from pyfastflow.graphflood import GraphFloodParticles, GraphFloodRelax, GraphFloodVanilla
 except ImportError:
@@ -62,12 +57,12 @@ except ImportError:
     InertialFloodProgram = None
 try:
     from pyfastflow.flood.fusw import BOUNDARY_CODES as FUSW_CODES
-    from pyfastflow.flood.fusw import FuswProgram
+    from pyfastflow.flood.fusw import FuswProgram, TileSchedule
     from pyfastflow.flood.fusw._common import B_FACE as _FUSW_B_FACE
     from pyfastflow.flood.fusw._common import C_T_END as _FUSW_T_END
     from pyfastflow.flood.fusw._common import C_TIME as _FUSW_TIME
 except ImportError:
-    FuswProgram = FUSW_CODES = None
+    FuswProgram = FUSW_CODES = TileSchedule = None
 from pyfastflow.flow import BOUNDARIES, LOCAL_MINIMA, RECEIVER_MODES, TOPOLOGIES
 from pyfastflow.noise import PerlinNoiseProgram
 from pyfastflow.saleve import SLOPE_CORRECTIONS, SaleveProgram
@@ -307,45 +302,6 @@ _SALEVE_CACHE = {}
               doc="Multigrid iterations."),
         Param("relaxation", "float", label="Multigrid relaxation", default=0.25, min=0.0, max=1.0,
               doc="Multigrid relaxation."),
-        # Multi-scale erosion post-process (Schott et al. 2024)
-        Param("mse_stages", "int",
-              label="Stages (0 = off, each after the 1st doubles resolution)", default=0, min=0,
-              max=len(MSE_PRESET),
-              doc="Multi-scale erosion post-process (Schott et al. 2024, release "
-                  "code port): number of stages of its preset, each erosion, "
-                  "thermal then deposition steps, the resolution doubling before "
-                  "every stage after the first; 0 = off."),
-        Param("mse_k", "float", label="Stream power k", default=0.0005, min=0.0,
-              doc="Multi-scale erosion: stream power coefficient k."),
-        Param("mse_p_sa", "float", label="Drainage exponent", default=0.8, min=0.0,
-              doc="Multi-scale erosion: drainage exponent of the stream power."),
-        Param("mse_p_sl", "float", label="Slope exponent", default=2.0, min=0.0,
-              doc="Multi-scale erosion: slope exponent of the stream power."),
-        Param("mse_dt", "float", label="Erosion time step", default=1.0, min=0.0,
-              doc="Multi-scale erosion: time step of the erosion steps."),
-        Param("mse_max_spe", "float", label="Stream power cap", default=10000.0, min=0.0,
-              doc="Multi-scale erosion: cap of the stream power before k."),
-        Param("mse_flow_p", "float", label="Flow split exponent", default=1.3, min=0.0,
-              doc="Multi-scale erosion: exponent of the slope weights of the "
-                  "multiple-flow split (erosion and deposition)."),
-        Param("mse_eps", "float", label="Thermal step eps", default=0.00005, min=0.0,
-              doc="Multi-scale erosion: thermal step, height moved per unstable "
-                  "neighbour is eps * dx²."),
-        Param("mse_noisified", "bool", label="Noisy talus angle", default=True,
-              doc="Multi-scale erosion: thermal talus angle drawn from simplex "
-                  "noise between the noise min and max (else the fixed tangent)."),
-        Param("mse_tan_angle", "float", label="Talus tangent (fixed)", default=0.57, min=0.0,
-              doc="Multi-scale erosion: fixed tangent of the talus angle."),
-        Param("mse_noise_min", "float", label="Talus tangent min (noisy)", default=0.9, min=0.0,
-              doc="Multi-scale erosion: lowest noisy talus tangent."),
-        Param("mse_noise_max", "float", label="Talus tangent max (noisy)", default=1.4, min=0.0,
-              doc="Multi-scale erosion: highest noisy talus tangent."),
-        Param("mse_noise_wavelength", "float",
-              label="Talus noise frequency", unit="1/m", default=0.0023, min=0.0,
-              doc="Multi-scale erosion: frequency (1/m) of the talus noise."),
-        Param("mse_deposition_strength", "float",
-              label="Deposition strength", default=1.0, min=0.0,
-              doc="Multi-scale erosion: deposition strength."),
     ],
     outputs=[
         Output("grid", "georaster", doc="The steady-state surface."),
@@ -367,26 +323,20 @@ def saleve_steady(n=1024, dx=50.0, seed=1, m=0.45, uplift=1e-3, erodibility=1e-5
                   max_slope_correction=100.0,
                   cliff_optimization=False, cliff_iterations=50,
                   cliff_learning_rate=0.01, cliff_river_weight=1.0 / 3.0,
-                  levels=5, iterations=24, relaxation=0.25,
-                  mse_stages=0, mse_k=0.0005, mse_p_sa=0.8, mse_p_sl=2.0, mse_dt=1.0,
-                  mse_max_spe=10000.0, mse_flow_p=1.3, mse_eps=0.00005,
-                  mse_noisified=True, mse_tan_angle=0.57, mse_noise_min=0.9,
-                  mse_noise_max=1.4, mse_noise_wavelength=0.0023,
-                  mse_deposition_strength=1.0):
+                  levels=5, iterations=24, relaxation=0.25):
     """Generate a steady-state landscape with pyfastflow's Salève stream-power solver.
 
     Uplift and erodibility fields from noise stacks over a white-noise initial
     surface, one steady multigrid solve on the GPU (CuPy). Square grid of n x n
     cells of dx metres, origin (0, 0), no CRS. The last solve is kept: a call
-    differing only in the post-process (``mse_*``) or ``return_fields`` reuses
-    it instead of solving again.
+    differing only in ``return_fields`` reuses it instead of solving again.
     """
     key = repr(sorted((k, v) for k, v in locals().items()
-                      if not k.startswith("mse_") and k != "return_fields"))
+                      if k != "return_fields"))
     n = int(n)
     seed = int(seed)
     backend = _backend()
-    phases = 1 + (1 if int(mse_stages) else 0)
+    phases = 1
     progress.report(0, phases, "steady-state landscape")
     if _SALEVE_CACHE.get("key") == key:
         z, uplift_field, erodibility_field = _SALEVE_CACHE["value"]
@@ -427,36 +377,15 @@ def saleve_steady(n=1024, dx=50.0, seed=1, m=0.45, uplift=1e-3, erodibility=1e-5
         _SALEVE_CACHE.update(key=key, value=(z.copy(), uplift_field, erodibility_field))
 
     cell = float(dx)
-    stages = int(mse_stages)
-    if stages:
-        import cupy as cp
-
-        progress.report(1, phases, f"multiscale erosion ({stages} stage{'s' if stages > 1 else ''})")
-        z, cell = mse_amplify(
-            backend, z, cell, stages=stages, k=mse_k, p_sa=mse_p_sa, p_sl=mse_p_sl,
-            dt=mse_dt, max_spe=mse_max_spe, flow_p=mse_flow_p, eps=mse_eps,
-            noisified=int(bool(mse_noisified)), tan_angle=mse_tan_angle,
-            noise_min=mse_noise_min, noise_max=mse_noise_max,
-            noise_wavelength=mse_noise_wavelength,
-            deposition_strength=mse_deposition_strength)
-        z = cp.asnumpy(z)
-    # The post-process resamples the same vertices' extent: the first cell
-    # centre stays at dx / 2.
-    origin = 0.5 * (float(dx) - cell)
     m = z.shape[0]
 
     def raster(v):
-        return GeoRaster(z=v, cell_size=cell, x_min=origin, y_min=origin)
+        return GeoRaster(z=v, cell_size=cell, x_min=0.0, y_min=0.0)
 
     def field(f):
         if np.isscalar(f):
             return np.full((m, m), np.float32(f))
-        f = np.array(f, dtype=np.float32)  # a copy: the cache keeps its own
-        for _ in range(stages - 1):
-            import cupy as cp
-
-            f = cp.asnumpy(mse_upsample_x2(f))
-        return f
+        return np.array(f, dtype=np.float32)  # a copy: the cache keeps its own
 
     progress.report(phases, phases, "done")
     out = {"grid": raster(z)}
@@ -793,9 +722,12 @@ def _sources_port():
                 doc=_SOURCES_PORT_DOC)
 
 
-def _source_stamps(points, dem, valid, who):
+def _source_stamps(points, dem, valid, who, with_ids=False, keep_ids=()):
     """Per discharge source on the valid cells: (flat cell indices, weights
-    summing to 1, q m³/s, area m² taken when linked); [] for none.
+    summing to 1, q m³/s, area m² taken when linked); [] for none. With
+    ``with_ids``: (stamps, their ``source`` ids, -1 for a point without
+    one); a source whose id is in ``keep_ids`` is kept with q 0 (its
+    discharge set over time elsewhere).
 
     Each point is a stamp: a radius under half a cell is the cell itself; a
     larger one a smooth bump, (1 - d²/r²)², so the source fades out at its
@@ -804,7 +736,7 @@ def _source_stamps(points, dem, valid, who):
     stamps add up and its q and area (the first point's) are spread over all
     of them. Points without one (or 0) are each their own source."""
     if points is None:
-        return []
+        return ([], []) if with_ids else []
     xy = points.in_crs(dem.crs_wkt or dem.epsg).xy
     n = len(xy)
     attrs = points.feature_attrs
@@ -844,11 +776,13 @@ def _source_stamps(points, dem, valid, who):
     groups = {}  # source id (or -1 - point index when none) -> point indices, in order
     for k in range(n):
         groups.setdefault(ids[k] if ids[k] > 0.0 else -1.0 - k, []).append(k)
-    stamps = []
-    for members in groups.values():
+    stamps, found = [], []
+    keep = {int(k) for k in keep_ids}
+    for key, members in groups.items():
         first = members[0]
+        sid = int(key) if key > 0.0 else -1
         taken_area = area[first] if linked[first] > 0.0 else 0.0
-        if q[first] == 0.0 and taken_area <= 0.0:
+        if q[first] == 0.0 and taken_area <= 0.0 and sid not in keep:
             continue
         parts = [part for part in (stamp(k) for k in members) if part is not None]
         if not parts:
@@ -856,9 +790,10 @@ def _source_stamps(points, dem, valid, who):
         cells, inverse = np.unique(np.concatenate([c for c, _b in parts]), return_inverse=True)
         weights = np.bincount(inverse, weights=np.concatenate([b for _c, b in parts]))
         stamps.append((cells, weights / weights.sum(), float(q[first]), float(taken_area)))
+        found.append(sid)
     if n and not stamps:
         raise ValueError(f"{who}: no discharge source falls on the DEM's valid cells")
-    return stamps
+    return (stamps, found) if with_ids else stamps
 
 
 def _source_discharge(stamps, rain, shape):
@@ -2133,6 +2068,8 @@ _FUSW_LIMITERS = ["minmod", "vanalbada", "vanleer"]
 _FUSW_SERIES = ("rain", "inflow", "source")
 #: Steps between two reads of the solver (time, max depth, probes).
 _FUSW_RECORD_ROWS = 1024
+#: Tile sizes T of the active tiles (T² a multiple of 32, at most 1024).
+_FUSW_TILE_SIZES = [8, 16, 24, 32]
 
 
 def _fusw_series(text, name, who):
@@ -2155,6 +2092,91 @@ def _fusw_series(text, name, who):
     if np.any(np.diff(times) < 0.0):
         raise ValueError(f"{who}: {name} series: the times must increase")
     return np.asarray(times), np.asarray(factors)
+
+
+def _csv_series(path, name, who):
+    """(times, values) of a CSV file: time (s) in the first column, the value
+    in the second; a header line, comma, semicolon, tab or space separated."""
+    import os
+
+    path = os.path.expanduser(str(path or "").strip())
+    if not path:
+        raise ValueError(f"{who}: {name}: no CSV file given")
+    if not os.path.isfile(path):
+        raise ValueError(f"{who}: {name}: no file {path!r}")
+    times, values = [], []
+    with open(path, encoding="utf-8-sig") as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            cells = [c for c in line.replace(";", ",").replace("\t", ",").replace(" ", ",").split(",")
+                     if c != ""]
+            try:
+                t, v = float(cells[0]), float(cells[1])
+            except (ValueError, IndexError):
+                if not times:
+                    continue  # header
+                raise ValueError(f"{who}: {name}: {path}, line {line_no}: not two numbers") from None
+            times.append(t)
+            values.append(v)
+    if not times:
+        raise ValueError(f"{who}: {name}: {path} holds no (time, value) row")
+    if np.any(np.diff(times) < 0.0):
+        raise ValueError(f"{who}: {name}: the times of {path} must increase")
+    return np.asarray(times), np.asarray(values)
+
+
+def _series_text(times, values):
+    """A (times, values) series as "t:v, t:v" (the series params' text)."""
+    return ", ".join(f"{float(t)!r}:{float(v)!r}" for t, v in zip(times, values))
+
+
+def _series_at(series, t, interp):
+    """Value of ``series`` (times, values) at time ``t``: step (a value holds
+    from its time on) or linear; the end values hold outside its times; 1
+    for an empty series."""
+    times, values = series
+    if not len(times):
+        return 1.0
+    if interp == "linear":
+        return float(np.interp(t, times, values))
+    return float(values[max(int(np.searchsorted(times, t, side="right")) - 1, 0)])
+
+
+#: Point inflow over time (FullSWOF): constant, factor over time, CSV (time, Q).
+_FUSW_INFLOW_MODES = ["constant", "factor", "csv"]
+_FUSW_INFLOW_LABELS = ["Constant", "Hydrograph: factor over time",
+                       "Hydrograph: CSV file (time, Q)"]
+#: Advance of the FullSWOF runner: model time, steps, wall time.
+_FUSW_ADVANCE = ["model_time", "steps", "wall_time"]
+
+
+def _fusw_hydrographs(text, who):
+    """{source id: (mode, (times, values))} of ``source_hydrographs``: JSON
+    {"<id>": {"mode": constant | factor | csv, "text": "t:f, ...", "path":
+    file}}; mode factor multiplies the source's q, csv gives its Q (m³/s)."""
+    import json
+
+    text = str(text or "").strip()
+    if not text:
+        return {}
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        raise ValueError(f"{who}: source_hydrographs is not JSON") from None
+    out = {}
+    for key, h in raw.items():
+        mode = str(h.get("mode", "constant"))
+        if mode == "constant":
+            out[int(key)] = ("constant", (np.zeros(0), np.zeros(0)))
+        elif mode == "factor":
+            out[int(key)] = ("factor", _fusw_series(h.get("text", ""), f"source {key}", who))
+        elif mode == "csv":
+            out[int(key)] = ("csv", _csv_series(h.get("path", ""), f"source {key} hydrograph", who))
+        else:
+            raise ValueError(f"{who}: source {key}: unknown hydrograph mode {mode!r}")
+    return out
 
 
 def _fusw_exposed(valid, boundary):
@@ -2384,8 +2406,19 @@ _FUSW_RETURNS = ("velocity", "unit_discharge", "discharge", "water_surface", "ma
     label="FullSWOF flood (shallow-water finite volumes)",
     inputs=_FUSW_FIELD_PORTS,
     params=[
-        Param("duration", "float", unit="s", default=3600.0, min=0.0,
-              doc="Model time to simulate (s), from the start (or previous_state's time)."),
+        Param("advance_by", "string", label="Update every", default="model_time",
+              choices=_FUSW_ADVANCE, choice_labels=["Model time (s)", "Steps", "Wall time (s)"],
+              doc="What one advance runs: model time (duration), steps, or wall-clock "
+                  "time (chunk_seconds); the outputs are returned after each."),
+        Param("duration", "float", label="Model time per advance", unit="s", default=3600.0,
+              min=0.0, doc="Model time simulated by each advance (s)."),
+        Param("steps", "int", label="Steps per advance", default=1000, min=1,
+              doc="Steps run by each advance."),
+        Param("chunk_seconds", "float", label="Wall time per advance", unit="s", default=2.0,
+              min=0.0, doc="Wall-clock seconds each advance runs."),
+        Param("end_time", "float", label="Stop at (0 = never)", unit="s", default=0.0, min=0.0,
+              doc="Model time (s) at which the run ends (the last advance stops there); 0: "
+                  "it goes on until stopped."),
         Param("rainfall", "float", unit="mm/h", default=50.0, min=0.0,
               doc="Rainfall rate (mm/h), when no precipitation field is given; times the "
                   "rain series factor."),
@@ -2395,8 +2428,28 @@ _FUSW_RETURNS = ("velocity", "unit_discharge", "discharge", "water_surface", "ma
         Param("inflow_series", "string", label="Inflow factor over time", default="",
               doc="Factor of the imposed edge discharges and the inflow lines over model "
                   "time, as Rain factor over time."),
-        Param("source_series", "string", label="Source factor over time", default="",
-              doc="Factor of the source field over model time, as Rain factor over time."),
+        Param("inflow_over_time", "string", label="Discharge over time", default="constant",
+              choices=_FUSW_INFLOW_MODES, choice_labels=_FUSW_INFLOW_LABELS,
+              doc="Discharge of the point inflows (sources) over model time: constant (each "
+                  "source's q), times a factor over time (Source factor over time), or a "
+                  "hydrograph Q(t) read from a CSV file. A source with its own hydrograph "
+                  "(source_hydrographs) follows it instead; the sources linked to the rain "
+                  "follow the rain."),
+        Param("source_series", "string", label="Factor over time", default="",
+              doc="Factor of the sources (and the source field) over model time, "
+                  "\"t:factor, t:factor, ...\" (s)."),
+        Param("inflow_csv", "path", label="Hydrograph file (CSV)", default="",
+              doc="CSV file: model time (s) in the first column, discharge Q (m³/s) in the "
+                  "second; a header line allowed."),
+        Param("inflow_csv_q", "string", label="Its Q is", default="total",
+              choices=["total", "each"],
+              choice_labels=["The total, shared by the sources' Q", "The Q of each source"],
+              doc="total: Q(t) is shared between the sources in proportion to their q; each: "
+                  "every source gets Q(t)."),
+        Param("source_hydrographs", "string", label="Per-source hydrographs", default="",
+              doc="Hydrographs of single sources, JSON {\"<source id>\": {\"mode\": "
+                  "constant | factor | csv, \"text\": \"t:f, ...\", \"path\": file}} "
+                  "(written by the host's source panel)."),
         Param("series_interp", "string", label="Between series times", default="step",
               choices=["step", "linear"],
               choice_labels=["Hold each factor until the next time", "Linear"],
@@ -2466,6 +2519,41 @@ _FUSW_RETURNS = ("velocity", "unit_discharge", "discharge", "water_surface", "ma
         Param("max_restarts", "int", label="Restarts per step", default=2, min=0,
               doc="Order 2: times a step is restarted with a smaller dt when its second "
                   "stage needs one."),
+        Param("time_stepping", "string", label="Time stepping", default="global",
+              choices=["global", "local"],
+              choice_labels=["Global (one dt, time-accurate)", "Local (per-cell dt, steady state)"],
+              doc="global: every cell advances with the step dt. local: each cell with its own "
+                  "dt_i = min(cfl dx / c_i, Local dt cap x dt), at least the step dt (c_i the "
+                  "largest wave speed over the cell and its neighbours). Same steady state, not "
+                  "time-accurate: model time and the budget volumes are pseudo-time."),
+        Param("local_dt_ratio", "float", label="Local dt cap (x dt)", default=10.0, min=1.0,
+              doc="Local time stepping: largest local dt as a multiple of the step dt."),
+        Param("tiles", "bool", label="Active tiles", default=False,
+              doc="Step only the tiles still changing, for the steady state: the grid is cut "
+                  "into tiles; every Tile check steps the tiles whose largest change of depth "
+                  "per step is above Tile threshold, and their 8 neighbours, are stepped, the "
+                  "others keep their state. A wetting front advances at most Tile size cells "
+                  "per Tile check steps. Works with global and local time stepping; not with "
+                  "infiltration."),
+        Param("tile_size", "int", label="Tile size", unit="cells", default=16,
+              choices=_FUSW_TILE_SIZES, doc="Cells per tile side."),
+        Param("tile_change", "string", label="Tile activity test", default="rate",
+              choices=["rate", "net"],
+              choice_labels=["Rate (change per step)", "Net (change over a window)"],
+              doc="rate: a tile is active when |r| dt of a cell is above Tile threshold (r the "
+                  "depth change rate from rain, sources and face fluxes). net: a tile already "
+                  "stepped is active when its net depth change over Tile window to 2 Tile "
+                  "window steps, per step, is above the threshold (a tile oscillating without a "
+                  "trend leaves); a frozen one wakes up when its rate changed by more than the "
+                  "threshold."),
+        Param("tile_tau", "float", label="Tile threshold", unit="m", default=1e-6,
+              doc="Largest change of depth per step (m) of a tile still active; < 0: every "
+                  "tile, every step."),
+        Param("tile_check", "int", label="Tile check", unit="steps", default=50, min=1,
+              doc="Steps between two rebuilds of the active tiles."),
+        Param("tile_window", "int", label="Tile window", unit="steps", default=1000, min=1,
+              doc="Net test: age of the reference depth (Tile window to 2 Tile window steps); "
+                  ">= Tile check."),
         Param("gravity", "float", unit="m/s²", default=9.81, min=0.0, doc="Gravity (m/s²)."),
         Param("he_ca", "float", label="Dry depth", unit="m", default=1e-12, min=0.0,
               doc="Depths below this are dry (m)."),
@@ -2583,13 +2671,18 @@ def fusw_flood(dem, h_init=None, previous_state=None, precipitation_field=None,
 @runner("pyfastflow.fusw_flood", axis="time", config=(
     "rain_series", "inflow_series", "source_series", "series_interp", "friction",
     "infiltration", "boundary", *(f"{s}_boundary" for s in _FUSW_EDGES), "nodata_boundary",
-    "order", "limiter", "flux", "precision", "time_step", "max_restarts", "surface_slope"))
+    "order", "limiter", "flux", "precision", "time_step", "max_restarts", "surface_slope",
+    "time_stepping", "tiles", "tile_size", "tile_change", "inflow_over_time", "inflow_csv",
+    "inflow_csv_q", "source_hydrographs"))
 class FuswFloodRun(Runner):
     """Live FullSWOF flood: one program across advances. Each advance
     simulates ``duration`` more seconds; model time, budget, max depth and
     the report and probe rows continue. Every non-config param (rain rate,
     friction, infiltration, edge values, line discharges, time stepping,
-    thresholds) can change between advances."""
+    thresholds, local dt cap, tile threshold / check / window) can change
+    between advances. With ``tiles`` the steps go through pyfastflow's
+    ``TileSchedule`` (active tiles); its active fraction goes to the report
+    (``active_tiles``) and the status."""
 
     who = "FullSWOF flood"
 
@@ -2602,6 +2695,14 @@ class FuswFloodRun(Runner):
                                                             _FUSW_NODATA_CODES)):
             if p[name] not in choices:
                 raise ValueError(f"{who}: unknown {name} {p[name]!r}")
+        self.tiled = bool(p["tiles"])
+        if self.tiled:
+            if TileSchedule is None:
+                raise ValueError(f"{who}: this pyfastflow has no active tiles (TileSchedule)")
+            if int(p["tile_size"]) not in _FUSW_TILE_SIZES:
+                raise ValueError(f"{who}: tile_size must be one of {_FUSW_TILE_SIZES}")
+            if p["infiltration"] != "none":
+                raise ValueError(f"{who}: active tiles are not available with infiltration")
         self.edge_codes = {}
         for side in _FUSW_EDGES:
             code = p[f"{side}_boundary"]
@@ -2625,7 +2726,14 @@ class FuswFloodRun(Runner):
         self.probe_cells = None
         if probe_points is not None:
             self.probe_cells = self._cells_of(probe_points)
+        if p["inflow_over_time"] not in _FUSW_INFLOW_MODES:
+            raise ValueError(f"{who}: unknown inflow_over_time {p['inflow_over_time']!r}")
+        if p["advance_by"] not in _FUSW_ADVANCE:
+            raise ValueError(f"{who}: unknown advance_by {p['advance_by']!r}")
         series = {name: _fusw_series(p[f"{name}_series"], name, who) for name in _FUSW_SERIES}
+        self.inflow_mode = p["inflow_over_time"]
+        if self.inflow_mode != "factor":
+            series["source"] = (np.zeros(0), np.zeros(0))
 
         # Spatial params are fields only when an array goes to the constructor.
         fields = {}
@@ -2641,14 +2749,32 @@ class FuswFloodRun(Runner):
                 fields[name] = value * (_MM_PER_H if rate else 1.0)
         # Discharge sources go to the source field (m³/s per cell); a linked
         # one follows the rain rate, sent again in _set_params.
-        # With linked ones the source series is applied here (the program's
-        # source factor would scale them too): the field is sent again before
-        # each run of steps, linked q x the rain factor, the rest x the source
-        # factor.
-        self.stamps = _source_stamps(inputs.get("sources"), dem, valid, who)
+        # With linked ones, a CSV hydrograph or per-source hydrographs, the
+        # discharge over time is applied here (python_sources; the program's
+        # source factor would scale every source alike): the field is sent
+        # again before each run of steps, linked q x the rain factor, the
+        # others by their hydrograph (_source).
+        self.end, self.shared_q, self._p = 0.0, 0.0, p
+        self.hydrographs = _fusw_hydrographs(p["source_hydrographs"], who)
+        self.stamps, self.stamp_ids = _source_stamps(
+            inputs.get("sources"), dem, valid, who, with_ids=True,
+            keep_ids=[k for k, (mode, _s) in self.hydrographs.items() if mode == "csv"])
         self.source_base = fields.get("source")
         self.series, self.series_interp = series, p["series_interp"]
+        self.inflow_csv = (_csv_series(p["inflow_csv"], "point inflow hydrograph", who)
+                           if self.inflow_mode == "csv" else None)
+        self.inflow_csv_each = p["inflow_csv_q"] == "each"
+        if self.inflow_csv is not None and not self.inflow_csv_each:
+            shared = sum(q for (_c, _w, q, area), sid in zip(self.stamps, self.stamp_ids)
+                         if area <= 0.0 and sid not in self.hydrographs)
+            if shared <= 0.0 and any(area <= 0.0 and sid not in self.hydrographs
+                                     for (_c, _w, _q, area), sid in zip(self.stamps, self.stamp_ids)):
+                raise ValueError(f"{who}: a shared CSV hydrograph needs the sources' discharges "
+                                 "(> 0) to split it")
+            self.shared_q = shared
         self.linked = any(area > 0.0 for _c, _w, _q, area in self.stamps)
+        self.python_sources = bool(self.stamps) and (
+            self.linked or self.inflow_csv is not None or bool(self.hydrographs))
         if self.stamps:
             fields["source"] = self._source(p, 0.0)
         self.edge_params = sorted({prog for prog, used in _FUSW_EDGE_VALUES.values()
@@ -2665,10 +2791,14 @@ class FuswFloodRun(Runner):
             infiltration=p["infiltration"], time_step=p["time_step"],
             inflow_unit="unit", series_interp=p["series_interp"],
             surface_slope=p["surface_slope"], inflow_lines=len(line_faces),
+            time_stepping=p["time_stepping"], tiles=self.tiled, tile_size=int(p["tile_size"]),
+            tile_change=p["tile_change"],
+            # Order 2 tiles: the activity test reads the stage-averaged mass fluxes.
+            mass_flux_mean=self.tiled and int(p["order"]) == 2,
             inflow_line_faces=sum(len(r) for r, _c, _s in line_faces),
             n_probes=0 if self.probe_cells is None else len(self.probe_cells[0]),
             record_capacity=0 if self.probe_cells is None else _FUSW_RECORD_ROWS,
-            **{f"{name}_series": 0 if name == "source" and self.linked else len(series[name][0])
+            **{f"{name}_series": 0 if name == "source" and self.python_sources else len(series[name][0])
                for name in _FUSW_SERIES},
             **{k: v.astype(np.float32) for k, v in fields.items()})
         try:
@@ -2681,12 +2811,19 @@ class FuswFloodRun(Runner):
             for k, (rows, cols, sides) in enumerate(line_faces):
                 flood.set_inflow_line(k, rows, cols, sides, *self._line_values(k, p))
             for name in _FUSW_SERIES:
-                if len(series[name][0]) and not (name == "source" and self.linked):
+                if len(series[name][0]) and not (name == "source" and self.python_sources):
                     flood.set_series(name, *series[name])
             if self.probe_cells is not None:
                 flood.set_probes(*self.probe_cells)
             self.max_depth = cp.asarray(self._start(inputs.get("h_init"),
                                                     inputs.get("previous_state")))
+            # Built after the start state: its first run steps every tile once.
+            self.schedule = None
+            if self.tiled:
+                self._check_tiles(p)
+                self.schedule = TileSchedule(flood, tau=float(p["tile_tau"]),
+                                             check=int(p["tile_check"]),
+                                             window=int(p["tile_window"]))
         except Exception:
             flood.close()
             raise
@@ -2696,34 +2833,65 @@ class FuswFloodRun(Runner):
         # dt of the last full step read (not the shorter one landing on a stop).
         self.step_dt = 0.0
 
+    def _check_tiles(self, p):
+        if int(p["tile_check"]) < 1:
+            raise ValueError(f"{self.who}: tile_check must be >= 1")
+        if p["tile_change"] == "net" and int(p["tile_window"]) < int(p["tile_check"]):
+            raise ValueError(f"{self.who}: tile_window must be >= tile_check")
+
+    def _set_tiles(self, p):
+        """Threshold, check and window of the schedule from ``p``; a changed
+        check restarts the count to the next rebuild."""
+        s = self.schedule
+        self._check_tiles(p)
+        s.tau, s.window = float(p["tile_tau"]), int(p["tile_window"])
+        if int(p["tile_check"]) != s.check:
+            s.check, s.since = int(p["tile_check"]), 0
+
     def _source(self, p, t):
         """The source field (m³/s per cell) at model time ``t``: the field
-        input plus the sources. With linked sources, (field + fixed q) x the
-        source factor + linked q (rain x area) x the rain factor; without, the
-        program applies the source factor."""
+        input plus the sources. Without python_sources the program applies
+        the source factor. With: linked q (rain x area) x the rain factor;
+        a source with its own hydrograph by it (constant: q; factor: q x its
+        factor; csv: its Q(t)); the others by the section's discharge over
+        time (constant: q; factor: q x the source factor; csv: Q(t) shared in
+        proportion to q, or Q(t) each); the field x the source factor."""
         rain = (_field(self.rain_field, 0.0, self.shape, "precipitation_field", self.who) * _MM_PER_H
                 if self.rain_field is not None else float(p["rainfall"]) * _MM_PER_H)
-        if not self.linked:
+        if not self.python_sources:
             out = _source_discharge(self.stamps, rain, self.shape)
             if self.source_base is not None:
                 out = out + self.source_base
             return np.where(self.valid, out, 0.0)
-        fixed = _source_discharge([(c, w, q, 0.0) for c, w, q, _a in self.stamps], 0.0, self.shape)
-        linked = _source_discharge([(c, w, 0.0, a) for c, w, _q, a in self.stamps], rain, self.shape)
+        interp = self.series_interp
+        section = self._factor("source", t)
+        csv_q = _series_at(self.inflow_csv, t, interp) if self.inflow_csv is not None else None
+        fixed = []
+        for (c, w, q, _a), sid in zip(self.stamps, self.stamp_ids):
+            own = self.hydrographs.get(sid)
+            if own is not None:
+                mode, ser = own
+                q_t = (q if mode == "constant" else q * _series_at(ser, t, interp)
+                       if mode == "factor" else _series_at(ser, t, interp))
+            elif csv_q is not None:
+                q_t = csv_q if self.inflow_csv_each else (
+                    csv_q * q / self.shared_q if self.shared_q > 0.0 else 0.0)
+            else:
+                q_t = q * section
+            fixed.append((c, w, q_t, 0.0))
+        out = _source_discharge(fixed, 0.0, self.shape)
+        if self.linked:
+            linked = _source_discharge([(c, w, 0.0, a) for c, w, _q, a in self.stamps], rain,
+                                       self.shape)
+            out = out + linked * self._factor("rain", t)
         if self.source_base is not None:
-            fixed = fixed + self.source_base
-        out = fixed * self._factor("source", t) + linked * self._factor("rain", t)
+            out = out + self.source_base * section
         return np.where(self.valid, out, 0.0)
 
     def _factor(self, name, t):
         """The factor of series ``name`` at model time ``t`` (1 without one;
         the end factors hold outside its times)."""
-        times, factors = self.series[name]
-        if not len(times):
-            return 1.0
-        if self.series_interp == "linear":
-            return float(np.interp(t, times, factors))
-        return float(factors[max(int(np.searchsorted(times, t, side="right")) - 1, 0)])
+        return _series_at(self.series[name], t, self.series_interp)
 
     def _cells_of(self, points):
         dem = self.dem
@@ -2792,7 +2960,11 @@ class FuswFloodRun(Runner):
         flood = self.flood
         scalars = {"gravity": p["gravity"], "cfl": p["cfl"], "dt": p["dt"],
                    "dt_max": p["dt_max"], "he_ca": p["he_ca"], "ve_ca": p["ve_ca"],
-                   "ie_ca": p["ie_ca"], "rho": p["rho"]}
+                   "rho": p["rho"]}
+        # The infiltration params exist only with it on.
+        infiltration = flood.infiltration != "none"
+        if infiltration:
+            scalars["ie_ca"] = p["ie_ca"]
         if "rain" not in self.field_names:
             scalars["rain"] = float(p["rainfall"]) * _MM_PER_H
         else:  # the field again: it may have changed since (see FloodRun)
@@ -2803,76 +2975,151 @@ class FuswFloodRun(Runner):
         if "friction_coefficient" not in self.field_names:
             scalars["friction_coefficient"] = p["friction_coefficient"]
         for name, (_d, _u, rate) in _FUSW_GREEN_AMPT.items():
-            if name not in self.field_names:
+            if infiltration and name not in self.field_names:
                 scalars[name] = float(p[name]) * (_MM_PER_H if rate else 1.0)
+        if p["time_stepping"] == "local":
+            scalars["local_dt_ratio"] = p["local_dt_ratio"]
         _flood_set(flood, **{k: float(v) for k, v in scalars.items()})
         _flood_set(flood, newton_iterations=int(p["newton_iterations"]),
                    record_interval=int(p["probe_every"]))
+        if self.schedule is not None:
+            self._set_tiles(p)
         for name, values in self._edge_values(p).items():
             getattr(flood, name).from_numpy(values)
         for k in range(int(flood.inflow_lines)):
             flood.set_line_discharge(k, *self._line_values(k, p))
 
     def advance(self, p):
+        """One advance: ``duration`` of model time, ``steps`` steps or
+        ``chunk_seconds`` of wall time (``advance_by``), not past
+        ``end_time``. Report rows every ``report_every`` of model time when
+        advancing by model time, else one row at the end of the advance."""
         import cupy as cp
 
         who, flood = self.who, self.flood
-        duration = float(p["duration"])
-        if duration <= 0.0:
-            raise ValueError(f"{who}: duration must be > 0")
+        mode = p["advance_by"]
+        if mode not in _FUSW_ADVANCE:
+            raise ValueError(f"{who}: unknown advance_by {mode!r}")
         if p["time_step"] == "fixed" and float(p["dt"]) <= 0.0:
             raise ValueError(f"{who}: the fixed time step must be > 0")
         if p["friction"] != "none" and self.lines is not None and not any(
                 _fusw_feature_value(self.lines, k, "slope", p["inflow_slope"]) > 0.0
                 for k in range(self.lines.n_features)):
             raise ValueError(f"{who}: the inflow lines need an energy slope > 0")
+        self.end = float(p["end_time"])
+        t0 = flood.time
+        if self.end > 0.0 and t0 >= self.end * (1.0 - 1e-12):
+            raise ValueError(f"{who}: the run reached its end time ({_num(self.end, 's')}); "
+                             "raise Stop at or Reset")
+        if mode == "model_time":
+            duration = float(p["duration"])
+            if duration <= 0.0:
+                raise ValueError(f"{who}: the model time per advance must be > 0")
+            if self.end > 0.0:
+                duration = min(duration, self.end - t0)
+        elif mode == "steps" and int(p["steps"]) < 1:
+            raise ValueError(f"{who}: the steps per advance must be >= 1")
+        elif mode == "wall_time" and float(p["chunk_seconds"]) <= 0.0:
+            raise ValueError(f"{who}: the wall time per advance must be > 0")
         self._set_params(p)
         chunk = int(p["check_steps"])
         if self.probe_cells is not None:
             chunk = min(chunk, _FUSW_RECORD_ROWS * int(p["probe_every"]))
-        t0 = flood.time
+        clock = flood._handle("clock")
+        bound = (float(p["dt"]) if p["time_step"] == "fixed" else
+                 float(p["dt_max"]) if float(p["dt_max"]) > 0.0 else float(p["cfl"]) * self.dx)
+        try:
+            if mode == "model_time":
+                self._advance_time(p, cp, clock, chunk, bound, t0, duration)
+            else:
+                self._advance_count(p, cp, clock, chunk, mode)
+        finally:
+            values = clock.to_numpy()
+            values[_FUSW_T_END] = 0.0
+            clock.from_numpy(values)
+        return self._outputs(p)
+
+    def _run(self, n, before):
+        """``n`` steps from model time ``before`` (the sources sent again
+        first when python applies their time factors), then the max depth
+        and probes; raises when the time did not move."""
+        import cupy as cp
+
+        flood = self.flood
+        if self.python_sources:
+            flood.source.from_numpy(self._source(self._p, before).astype(self.real))
+        if self.schedule is not None:
+            self.schedule.run(n)
+        else:
+            flood.run(n)
+        cp.maximum(self.max_depth, self.h.reshape(self.shape).astype(cp.float32),
+                   out=self.max_depth)
+        self._drain_probes()
+        if flood.time <= before:
+            raise RuntimeError(f"{self.who}: the time step fell to 0 at t = {flood.time:.6g} s")
+
+    def _advance_time(self, p, cp, clock, chunk, bound, t0, duration):
+        flood = self.flood
+        self._p = p
         end = t0 + duration
         report_dt = float(p["report_every"])
         if self.next_row is None or self.next_row <= t0:
             self.next_row = t0 + report_dt if report_dt > 0.0 else end
         self.next_row = min(self.next_row, end)
         eps = 1e-9 * max(duration, 1.0)
-        clock = flood._handle("clock")
-        bound = (float(p["dt"]) if p["time_step"] == "fixed" else
-                 float(p["dt_max"]) if float(p["dt_max"]) > 0.0 else float(p["cfl"]) * self.dx)
         progress.report(0.0, duration, "shallow-water flow")
-        try:
-            while flood.time < end - eps:
-                stop = self.next_row
-                values = clock.to_numpy()
-                values[_FUSW_T_END] = stop
-                clock.from_numpy(values)
-                while flood.time < stop - eps:
-                    before = flood.time
-                    # Steps to the stop at the last dt (or its bound): no
-                    # zero-length steps after landing on it.
-                    n = max(1, min(chunk, int(np.ceil((stop - before) / (self.step_dt or bound)))))
-                    if self.linked:
-                        flood.source.from_numpy(self._source(p, before).astype(self.real))
-                    flood.run(n)
-                    if flood.time < stop - eps:
-                        self.step_dt = flood.last_dt
-                    elif not self.step_dt:
-                        self.step_dt = (flood.time - before) / n
-                    cp.maximum(self.max_depth, self.h.reshape(self.shape).astype(cp.float32),
-                               out=self.max_depth)
-                    self._drain_probes()
-                    progress.report(min(flood.time, end) - t0, duration, "shallow-water flow")
-                    if flood.time <= before:
-                        raise RuntimeError(f"{who}: the time step fell to 0 at t = "
-                                           f"{flood.time:.6g} s")
-                self._row()
-                self.next_row = min(self.next_row + report_dt, end) if report_dt > 0.0 else end
-        finally:
+        while flood.time < end - eps:
+            stop = self.next_row
             values = clock.to_numpy()
-            values[_FUSW_T_END] = 0.0
+            values[_FUSW_T_END] = stop
             clock.from_numpy(values)
-        return self._outputs(p)
+            while flood.time < stop - eps:
+                before = flood.time
+                # Steps to the stop at the last dt (or its bound): no
+                # zero-length steps after landing on it.
+                n = max(1, min(chunk, int(np.ceil((stop - before) / (self.step_dt or bound)))))
+                self._run(n, before)
+                if flood.time < stop - eps:
+                    self.step_dt = flood.last_dt
+                elif not self.step_dt:
+                    self.step_dt = (flood.time - before) / n
+                progress.report(min(flood.time, end) - t0, duration, "shallow-water flow")
+            self._row()
+            self.next_row = min(self.next_row + report_dt, end) if report_dt > 0.0 else end
+
+    def _advance_count(self, p, cp, clock, chunk, mode):
+        """Advance by steps or wall time, stopping at end_time when set."""
+        import time
+
+        flood = self.flood
+        self._p = p
+        if self.end > 0.0:
+            values = clock.to_numpy()
+            values[_FUSW_T_END] = self.end
+            clock.from_numpy(values)
+        eps = 1e-9 * max(self.end, 1.0)
+        total = int(p["steps"]) if mode == "steps" else None
+        seconds = float(p["chunk_seconds"])
+        began = time.perf_counter()
+        done = 0
+        while True:
+            n = chunk if total is None else min(chunk, total - done)
+            before = flood.time
+            self._run(n, before)
+            done += n
+            self.step_dt = flood.last_dt
+            if total is not None:
+                progress.report(done, total, "shallow-water flow")
+            else:
+                progress.report(min(time.perf_counter() - began, seconds), seconds,
+                                "shallow-water flow")
+            if self.end > 0.0 and flood.time >= self.end - eps:
+                break
+            if total is not None and done >= total:
+                break
+            if total is None and time.perf_counter() - began >= seconds:
+                break
+        self._row()
 
     def _drain_probes(self):
         if self.probe_cells is None:
@@ -2903,6 +3150,8 @@ class FuswFloodRun(Runner):
             if code in used and code != "wall":
                 row[f"out_{code}"] = b["boundary"][code]["volume"]
         row["error"] = b["error"]
+        if self.schedule is not None:
+            row["active_tiles"] = self._active_fraction()
         for k, v in row.items():
             self.rows.setdefault(k, []).append(float(v))
 
@@ -2948,9 +3197,13 @@ class FuswFloodRun(Runner):
         if p["return_report"]:
             units = {k: "m³" for k in self.rows}
             units.update(time="s", dt="s", h_max="m")
+            roles = {"time": "x", "dt": "aux"}
+            if "active_tiles" in self.rows:
+                units["active_tiles"] = ""
+                roles["active_tiles"] = "aux"
             out["report"] = DataTable(
                 {k: np.asarray(v, dtype=np.float64) for k, v in self.rows.items()},
-                units=units, roles={"time": "x", "dt": "aux"}, title="FullSWOF flood")
+                units=units, roles=roles, title="FullSWOF flood")
         if self.probe_cells is not None and self.probe_rows:
             units = {k: ("m" if k.startswith("h_") else "m/s") for k in self.probe_rows}
             units["time"] = "s"
@@ -2968,8 +3221,16 @@ class FuswFloodRun(Runner):
             return {"text": "", "stopped": False}
         return {"text": f"t = {_num(rows['time'][-1], 's')}, max depth "
                         f"{_num(rows['h_max'][-1], 'm')}, out {_num(rows['outflow'][-1], 'm³')}, "
-                        f"balance error {_num(rows['error'][-1], 'm³')}.",
-                "stopped": False}
+                        f"balance error {_num(rows['error'][-1], 'm³')}"
+                        + (f", active tiles {100.0 * rows['active_tiles'][-1]:.1f} %"
+                           if "active_tiles" in rows else "") + ".",
+                "stopped": self.end > 0.0 and self.flood.time >= self.end * (1.0 - 1e-9)}
+
+    def _active_fraction(self):
+        """Fraction of the tiles stepped at the last rebuild (1 before the
+        first: the full step)."""
+        log = self.schedule.log
+        return float(log[-1][1]) if log else 1.0
 
     def close(self):
         self.flood.close()

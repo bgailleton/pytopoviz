@@ -43,6 +43,7 @@ from .pyfastflow import (_MM_PER_H, _backend, _field, _like, _metric_cell_size, 
                          _sources_port)
 
 WET_DEPTH = 1.0e-3
+INACTIVE = 1.0e30  # The wall base of a leaf off the footprint.
 GRAVITY = 9.81  # As the solvers' default.
 
 _SCHEMES = {"inertial": QuadtreeInertial, "fusw": QuadtreeFusw, "graphflood": QuadtreeFlood}
@@ -454,25 +455,19 @@ class QuadtreeFloodRun(Runner):
         if scheme not in _SCHEMES:
             raise ValueError(f"{who}: unknown scheme {scheme!r}")
         self.dem = dem_grid = inputs["dem"]
-        self.cell = _metric_cell_size(dem_grid, who)
+        cell = _metric_cell_size(dem_grid, who)
         dem = np.array(dem_grid.z, np.float64 if p["precision"] == "f64" else np.float32)
         valid = dem_grid.valid & np.isfinite(dem)
         if not valid.any():
             raise ValueError(f"{who}: the DEM has no valid cell")
         dem[~valid] = np.nan
-        self.rows, self.columns = dem.shape
-        self.lowest = float(dem[valid].min())
-        dem -= self.lowest
-        self.graph = scheme == "graphflood"
-        self.scheme = scheme
         self.last_params = p
-        self.bed = dem
-        self._valid = valid
+        self.cell, self.x_min, self.y_min = cell, float(dem_grid.x_min), float(dem_grid.y_min)
         self.stamps = _source_stamps(inputs.get("sources"), dem_grid, valid, who)
         shape = dem.shape
         # m³/s per cell of the rainfall field (times the rain factor) and of the source field.
         self._rain_cells = self._src_cells = None
-        for port, unit, attr in (("precipitation_field", _MM_PER_H * self.cell * self.cell, "_rain_cells"),
+        for port, unit, attr in (("precipitation_field", _MM_PER_H * cell * cell, "_rain_cells"),
                                  ("source_field", 1.0, "_src_cells")):
             if inputs.get(port) is not None:
                 value = np.where(valid, np.maximum(_field(inputs[port], 0.0, shape, port, who), 0.0) * unit, 0.0)
@@ -481,22 +476,11 @@ class QuadtreeFloodRun(Runner):
         self.interp = p["series_interp"]
         if self.interp not in ("step", "linear"):
             raise ValueError(f"{who}: unknown series_interp {self.interp!r}")
-        self.factor = 1.0 if self.graph else _series_factor(self.series, self.interp, 0.0)
+        graph = scheme == "graphflood"
+        self.factor = 1.0 if graph else _series_factor(self.series, self.interp, 0.0)
         rain = float(p["rainfall"]) * _MM_PER_H * self.factor
-        if self.graph and rain <= 0.0 and self._rain_cells is None:
+        if graph and rain <= 0.0 and self._rain_cells is None:
             raise ValueError(f"{who}: GraphFlood needs rain: it solves the steady flood of a rain rate.")
-        self.rain = rain
-        self._settings_now = None
-        self._source_spec = None
-        settings = _settings(p)
-        options = _options(p)
-        time_step = settings["time"]
-        if not self.graph:
-            # Whether the step comes from the CFL is set for the life of the flood.
-            options.update(time_step="cfl" if time_step.get("mode", "cfl") == "cfl" else "fixed")
-            options.update({key: float(time_step[key]) for key in ("cfl", "dt", "dt_max") if key in time_step})
-        self.time_curve, self.time_step = None, "" if self.graph else options["time_step"]
-        edges = footprint_outlets(~valid)
         levels = np.full(shape, int(p["levels"]), np.int32)
         if inputs.get("level_field") is not None:
             given = _field(inputs["level_field"], np.nan, shape, "level_field", who)
@@ -505,22 +489,52 @@ class QuadtreeFloodRun(Runner):
                 raise ValueError(f"{who}: the level field has no value")
             given = np.rint(np.where(known, given, 0.0)).clip(0).astype(np.int32)
             levels = np.where(known, given, int(given[known].max())).astype(np.int32)
+        options = _options(p)
+        options["bed_percentile"] = float(p["bed_percentile"]) if p["bed_rule"] == "percentile" else None
+        self._open(dem, valid, scheme, rain, _settings(p), options, levels, int(p["edge_level"]), int(p["capacity"]))
+
+    def _open(self, dem, valid, scheme, rain, settings, options, levels, edge_level=-1, capacity=5_000_000):
+        """Makes the solver and the run's state (nevertheLAS's Run): ``dem``, rows
+        from the north, NaN off ``valid``; ``rain`` in m/s; ``settings`` as
+        :meth:`configure` takes them; ``options``, the solver's own; ``levels``,
+        the starting level of each cell. Wants ``cell``, ``x_min`` and ``y_min``
+        set, and what :meth:`_source_arrays` reads."""
+        dem = np.array(dem)
+        self.rows, self.columns = dem.shape
+        self.lowest = float(dem[valid].min())
+        dem -= self.lowest
+        self.graph = scheme == "graphflood"
+        self.scheme = scheme
+        self.bed = dem
+        self._valid = valid
+        self.rain = rain
+        self._settings_now = None
+        self._source_spec = None
+        options = dict(options)
+        time_step = settings.get("time", {})
+        if not self.graph:
+            # Whether the step comes from the CFL is set for the life of the flood.
+            options.update(time_step="cfl" if time_step.get("mode", "cfl") == "cfl" else "fixed")
+            options.update({key: float(time_step[key]) for key in ("cfl", "dt", "dt_max") if key in time_step})
+        self.time_curve, self.time_step = None, "" if self.graph else options["time_step"]
+        edges = footprint_outlets(~valid)
+        levels = np.array(levels, np.int32)
         top = int(levels.max())
         # The leaves under a source start at the finest cell.
         held = self._source_arrays(settings)[1]
         if held is not None:
             levels[held] = 0
-        options["bed_percentile"] = float(p["bed_percentile"]) if p["bed_rule"] == "percentile" else None
         # A leaf takes the finest level of its cells.
-        if int(p["edge_level"]) >= 0:
-            levels[edges] = np.minimum(levels[edges], int(p["edge_level"]))
+        if edge_level >= 0:
+            levels[edges] = np.minimum(levels[edges], edge_level)
         if not valid.all():
             options["outlet_mask"] = edges
         self.flood = _SCHEMES[scheme](
             _backend(), np.where(valid, dem, np.nan), self.cell, rain, levels=levels, max_level=top,
-            criterion=settings["criterion"], threshold=settings["threshold"],
-            coarsen_below=settings["coarsen_below"], refine_neighbours=settings["refine_neighbours"],
-            capacity=int(p["capacity"]), **options)
+            criterion=settings.get("criterion", "h"), threshold=settings.get("threshold", 0.05),
+            coarsen_below=settings.get("coarsen_below"),
+            refine_neighbours=bool(settings.get("refine_neighbours", True)),
+            capacity=int(capacity), **options)
         try:
             self.top = self.flood.tree.levels
             self.highest = float(np.nanmax(dem))
@@ -577,7 +591,7 @@ class QuadtreeFloodRun(Runner):
             self.hold = {key: float(hold[key]) for key in ("steps", "change", "longest")} if hold and hold.get("on") else None
             self.hold_mark, self.hold_change = None, None
         mode = settings.get("refine", self.mode or "interval")
-        if mode == "steady" and flood.rain <= 0.0:
+        if mode == "steady" and flood.rain_rate <= 0.0:
             raise ValueError("Refining at steady state needs rain: without it, the balance with the outflow cannot be tested.")
         limits = {key: float(settings[key]) for key in ("balance", "depth_change", "held", "maximum") if key in settings}
         if mode == "steady" and self.mode != "steady":
@@ -624,9 +638,10 @@ class QuadtreeFloodRun(Runner):
         raster, held = self._source_arrays(settings)
         self.flood.set_source(raster, held)
 
-    def _follow_rain(self, p):
-        """Rate (``rainfall``) and series factor at the flood's time: the solver's
-        rain and the sources follow them from now on."""
+    def _follow_rain(self):
+        """Rate (``rainfall`` of the last params) and series factor at the flood's
+        time: the solver's rain and the sources follow them from now on."""
+        p = self.last_params
         factor = 1.0 if self.graph else _series_factor(self.series, self.interp, self.flood.time)
         rain = float(p["rainfall"]) * _MM_PER_H * factor
         if (rain, factor) == (self.rain, self.factor):
@@ -649,7 +664,8 @@ class QuadtreeFloodRun(Runner):
             self.flood.set_time_step(cfl=spec.get("cfl"), dt_max=spec.get("dt_max"))
         elif spec.get("mode") == "curve":
             curve = spec["curve"]
-            self.time_curve = {"points": curve["points"], "x": curve.get("x", "time"), "ramp": bool(curve.get("ramp", False))}
+            points = sorted((float(x), max(float(dt), 1.0e-9)) for x, dt in curve["points"])
+            self.time_curve = {"points": points, "x": curve.get("x", "time"), "ramp": bool(curve.get("ramp", False))}
             self._follow_time_curve()
         elif "dt" in spec:
             self.flood.set_time_step(dt=spec["dt"])
@@ -691,12 +707,22 @@ class QuadtreeFloodRun(Runner):
         end comes first; returns the leaves on the DEM's cells."""
         self.last_params = p
         self.configure(_settings(p))
-        self._follow_rain(p)
+        self._follow_rain()
         seconds = float(p["chunk_seconds"])
         if seconds <= 0.0:
             if not self.graph and self.mode in ("interval", "off") and self.duration <= 0.0:
                 raise ValueError(f"{self.who}: running to the end needs a duration (or refining at steady state)")
             seconds = math.inf
+        began = time.perf_counter()
+        self._run_for(seconds)
+        self._values()
+        self.seconds += time.perf_counter() - began
+        if self.error:
+            raise ValueError(f"{self.who}: {self.error}")
+        return self._outputs(p)
+
+    def _run_for(self, seconds):
+        """Runs about ``seconds`` of wall time (inf: to the end), unless the end comes first."""
         began = time.perf_counter()
         flood = self.flood
         while self.graph and not self.finished and time.perf_counter() - began < seconds:
@@ -705,7 +731,7 @@ class QuadtreeFloodRun(Runner):
         while not self.graph and not self.finished and time.perf_counter() - began < seconds:
             chunk_began = time.perf_counter()
             self._follow_time_curve()
-            self._follow_rain(p)
+            self._follow_rain()
             steps = self.chunk
             target = self._next_stop()
             if target is not None and flood.dt > 0.0:
@@ -724,11 +750,6 @@ class QuadtreeFloodRun(Runner):
             self._schedule(now)
             progress.report(now, self.duration if self.duration > 0.0 and self.mode != "steady" else 0.0,
                             f"{self.scheme}, t = {now:.4g} s")
-        self._values()
-        self.seconds += time.perf_counter() - began
-        if self.error:
-            raise ValueError(f"{self.who}: {self.error}")
-        return self._outputs(p)
 
     def _advance_graph(self):
         """One check of QuadtreeFlood; its own rule says when to refine."""
@@ -884,7 +905,7 @@ class QuadtreeFloodRun(Runner):
         flood = self.flood
         if self.graph:
             return flood.velocity() if flood._warm else None
-        return (flood.u, flood.v) if hasattr(flood, "u") else flood.velocity()
+        return flood.velocity()
 
     def _split_flags(self):
         import cupy as cp
@@ -913,7 +934,8 @@ class QuadtreeFloodRun(Runner):
     # ---- outputs (nevertheLAS's export on the DEM's cells) -------------------
 
     def _wall_and_slope(self, tree, z, active):
-        """Per leaf: the lowest of itself and its neighbours; dz/dx and dz/dy across its links."""
+        """Per leaf, (n, 3): the lowest of itself and its neighbours (INACTIVE off the
+        footprint); dz/dx and dz/dy across its links."""
         import cupy as cp
 
         n = tree.n
@@ -922,6 +944,8 @@ class QuadtreeFloodRun(Runner):
         adj = cp.asnumpy(tree._array("ADJ")[: row.size]).astype(np.int64)
         heights = np.where(active, z, np.inf)
         link = active[adj] & active[row]
+        base = heights.copy()
+        np.minimum.at(base, row[link], heights[adj[link]])
         side = self.cell * np.left_shift(1, cp.asnumpy(tree.level).astype(np.int64)).astype(np.float64)
         sides = np.zeros((n, 4))
         counts = np.zeros((n, 4))
@@ -935,7 +959,8 @@ class QuadtreeFloodRun(Runner):
         run_y = np.where(filled[:, 0], 1.0, 0.0) + np.where(filled[:, 3], 1.0, 0.0)
         dzdx = (means[:, 2] - means[:, 1]) / np.maximum(run_x * side, 1.0e-9)
         dzdy = (means[:, 0] - means[:, 3]) / np.maximum(run_y * side, 1.0e-9)
-        return np.where(active, dzdx, 0.0), np.where(active, dzdy, 0.0)
+        base = np.where(active, base, INACTIVE)
+        return np.stack([base, np.where(active, dzdx, 0.0), np.where(active, dzdy, 0.0)], axis=1)
 
     def _leaf_field(self, layer):
         """A layer per leaf, NaN off the footprint."""
@@ -951,8 +976,8 @@ class QuadtreeFloodRun(Runner):
             values = np.zeros(n) if velocity is None else np.hypot(cp.asnumpy(velocity[0][:n]), cp.asnumpy(velocity[1][:n])) * h
         elif layer == "slope":
             z = cp.asnumpy(flood.z[:n]).astype(np.float64)
-            dzdx, dzdy = self._wall_and_slope(tree, z, cp.asnumpy(tree.active))
-            values = np.hypot(dzdx, dzdy)
+            slopes = self._wall_and_slope(tree, z, cp.asnumpy(tree.active))
+            values = np.hypot(slopes[:, 1], slopes[:, 2])
         elif layer == "leaf_size":
             values = self.cell * np.left_shift(1, cp.asnumpy(tree.level).astype(np.int64)).astype(np.float64)
         else:
@@ -1037,24 +1062,31 @@ class QuadtreeFloodRun(Runner):
         return _like(self.dem, np.where(self._valid, z, np.nan).astype(np.float32))
 
     def _grid_at(self, layer, cell):
-        """``layer`` on the lattice of ``cell`` from the DEM's south-west corner
-        (nevertheLAS's export): coarser, from the pyramid level of that size;
-        the depth keeps each leaf's own value."""
         dem = self.dem
+        return GeoRaster(z=self._lattice(layer, cell).astype(np.float32), cell_size=cell, x_min=dem.x_min,
+                         y_min=dem.y_min, epsg=dem.epsg, crs_wkt=dem.crs_wkt)
+
+    def _lattice(self, layer, cell):
+        """``layer`` on the lattice of ``cell`` from the DEM's south-west corner, rows from
+        the north (nevertheLAS's export): coarser, from the pyramid level of that size;
+        the depth keeps each leaf's own value. ``elevation``: the bed itself, not its
+        mean over the leaves."""
         shape = (max(1, math.ceil(self.rows * self.cell / cell - 1.0e-9)),
                  max(1, math.ceil(self.columns * self.cell / cell - 1.0e-9)))
         ground = to_lattice(self.bed[::-1], 0.0, 0.0, self.cell, shape, cell)
-        target = 0
-        while self.cell * 2 ** (target + 1) <= cell * (1.0 + 1.0e-9):
-            target += 1
-        interpolate = layer != "water_depth"
-        source = self._pyramid(self._leaf_field(layer), target, interpolate)[::-1]
-        size = self.cell * 2 ** target
+        if layer == "elevation":
+            source, size, interpolate = (self.bed + self.lowest)[::-1], self.cell, True
+        else:
+            target = 0
+            while self.cell * 2 ** (target + 1) <= cell * (1.0 + 1.0e-9):
+                target += 1
+            interpolate = layer != "water_depth"
+            source = self._pyramid(self._leaf_field(layer), target, interpolate)[::-1]
+            size = self.cell * 2 ** target
         y_offset = self.rows * self.cell - source.shape[0] * size  # Coarse cells can pass the south edge.
         raster = to_lattice(source, 0.0, y_offset, size, shape, cell, interpolate)
         raster[np.isnan(ground)] = np.nan  # A leaf can straddle the edge of the footprint.
-        return GeoRaster(z=raster[::-1].astype(np.float32), cell_size=cell, x_min=dem.x_min,
-                         y_min=dem.y_min, epsg=dem.epsg, crs_wkt=dem.crs_wkt)
+        return raster[::-1]
 
     def _outputs(self, p):
         cell = float(p["output_cell"])
@@ -1073,6 +1105,10 @@ class QuadtreeFloodRun(Runner):
     def refine_now(self):
         """One refinement, whatever the schedule says; the outputs on the new
         leaves."""
+        self._refine_now()
+        return {"text": self.status()["text"], "outputs": self._outputs(self.last_params)}
+
+    def _refine_now(self):
         flood = self.flood
         if self.graph:
             began = time.perf_counter()
@@ -1086,14 +1122,13 @@ class QuadtreeFloodRun(Runner):
             if self.steady is not None:
                 self.steady.reset()
                 self.steady.update(flood)
-        return {"text": self.status()["text"], "outputs": self._outputs(self.last_params)}
 
     def _place(self, leaf, side):
         """Corner and size of a leaf in map coordinates: x west, y south."""
-        tree, dem = self.flood.tree, self.dem
+        tree = self.flood.tree
         size = side * self.cell
-        north = dem.y_min + self.rows * self.cell - int(tree.y[leaf]) * self.cell
-        return {"x": dem.x_min + int(tree.x[leaf]) * self.cell, "y": north - size, "size": size}
+        north = self.y_min + self.rows * self.cell - int(tree.y[leaf]) * self.cell
+        return {"x": self.x_min + int(tree.x[leaf]) * self.cell, "y": north - size, "size": size}
 
     def _cfl_rates(self):
         """Per leaf or link, as the solver takes its step: (rate, leaf a, leaf b); b is None on a leaf."""
@@ -1115,48 +1150,79 @@ class QuadtreeFloodRun(Runner):
     def dt_limit(self):
         """The leaf whose water sets the CFL step (none when no CFL sets it,
         or nothing is wet)."""
+        if self.graph or self.time_step != "cfl":
+            return {"text": "No CFL sets the time step of this flood."}
+        facts = self._dt_facts()
+        if not facts:
+            return {"text": "Nothing is wet: no leaf sets the time step."}
+        about = "" if facts["exact"] else "about "
+        size, depth, allowed, top = facts["size"], facts["depth"], facts["allowed"], facts["cap"]
+        if facts["capped"]:
+            text = (f"dt is capped at the largest step, {top:.3f} s. The tightest leaf allows "
+                    f"{about}{allowed:.3f} s: {size:.2f} m, {depth:.3f} m deep")
+        else:
+            text = f"dt is set by a {size:.2f} m leaf {depth:.3f} m deep, which allows {about}{allowed:.3f} s"
+        return {"text": text, "at": [facts["x"] + 0.5 * size, facts["y"] + 0.5 * size]}
+
+    def _dt_facts(self):
+        """The leaf whose water sets the CFL step: its place, depth, the step it allows,
+        the flood's dt and cap ({} when no CFL sets it, or nothing is wet)."""
         import cupy as cp
 
         flood = self.flood
         if self.graph or self.time_step != "cfl":
-            return {"text": "No CFL sets the time step of this flood."}
+            return {}
         rates, links = self._cfl_rates()
         at = int(cp.argmax(rates))
         rate = float(rates[at])
         if rate <= 0.0:
-            return {"text": "Nothing is wet: no leaf sets the time step."}
+            return {}
         leaf = at
         if links is not None:
             a, b = int(links[0][at]), int(links[1][at])
             leaf = a if float(flood.h[a]) >= float(flood.h[b]) else b
-        cfl = float(flood.sw.cfl.read())
-        top = float(flood.sw.dt_max.read())
+        cfl = float(flood.cfl.read())
+        top = float(flood.dt_max.read())
         side = 1 << int(flood.tree.level[leaf])
-        place = self._place(leaf, side)
-        depth, allowed = float(flood.h[leaf]), cfl / rate
-        about = "" if self.scheme != "fusw" else "about "
-        if top > 0.0 and allowed > top:
-            text = (f"dt is capped at the largest step, {top:.3f} s. The tightest leaf allows "
-                    f"{about}{allowed:.3f} s: {place['size']:.2f} m, {depth:.3f} m deep")
-        else:
-            text = f"dt is set by a {place['size']:.2f} m leaf {depth:.3f} m deep, which allows {about}{allowed:.3f} s"
-        return {"text": text, "at": [place["x"] + 0.5 * place["size"], place["y"] + 0.5 * place["size"]]}
+        return {**self._place(leaf, side), "depth": float(flood.h[leaf]), "allowed": cfl / rate, "dt": flood.dt,
+                "capped": top > 0.0 and cfl / rate > top, "cap": top, "exact": self.scheme != "fusw"}
 
     def inspect(self, x, y):
         """What the flood holds at a point, and why its leaf is the size it is."""
+        f = self._inspect_facts(float(x), float(y))
+        if not f["inside"]:
+            return {"text": "That point is off the flood's cells."}
+        bed, h, speed = f["bed"], f["depth"], f["speed"]
+        lines = [f"Cell {f['column']}, {f['row']} · x {f['cell_x']:.1f} · y {f['cell_y']:.1f}",
+                 f"Leaf: {f['size']:.2f} m",
+                 f"Water: {h:.3f} m deep · surface {bed + h:.2f} m · speed {speed:.3f} m/s · |q| {speed * h:.4f} m²/s"]
+        if f.get("allowed") is not None:
+            lines.append(f"Time step: this leaf allows {f['allowed']:.3f} s; the flood is at {f['dt']:.3f} s")
+        lines += ["", "Size: " + f["refining"]]
+        if f["conditions"]:
+            lines.append(" · ".join(f"{c['name']} {c['value']:.4f} of {c['threshold']:.4f}" for c in f["conditions"]))
+        lines += ["", f"Bed of the leaf: {bed:.2f} m"]
+        if f["raster_bed"] is not None:
+            lines.append(f"Bed of this cell: {f['raster_bed']:.2f} m")
+        if f["neighbour_low"] is not None:
+            lines.append(f"Leaves next to it: {f['neighbour_low']:.2f} to {f['neighbour_high']:.2f} m")
+        return {"text": "\n".join(lines), "at": [f["cell_x"], f["cell_y"]]}
+
+    def _inspect_facts(self, x, y):
+        """What the flood holds at a point of map coordinates, and why it is so (nevertheLAS's inspect)."""
         import cupy as cp
 
-        flood, tree, dem = self.flood, self.flood.tree, self.dem
-        x, y = float(x), float(y)
-        column = math.floor((x - dem.x_min) / self.cell)
-        row = math.floor((dem.y_min + self.rows * self.cell - y) / self.cell)
+        flood, tree = self.flood, self.flood.tree
+        column = math.floor((x - self.x_min) / self.cell)
+        row = math.floor((self.y_min + self.rows * self.cell - y) / self.cell)
+        out = {"inside": False, "column": column, "row": row}
         if not (0 <= column < self.columns and 0 <= row < self.rows):
-            return {"text": "That point is off the flood's cells."}
+            return out
         sides = self._leaf_side()
         found = cp.nonzero((tree.x <= column) & (column < tree.x + sides) & (tree.y <= row)
                            & (row < tree.y + sides) & tree.active)[0]
         if found.size == 0:
-            return {"text": "That point is off the flood's cells."}
+            return out
         leaf = int(found[0])
         side = int(sides[leaf])
         ptr = tree._array("PTR")
@@ -1174,17 +1240,19 @@ class QuadtreeFloodRun(Runner):
                 continue
             values = flood.quantity(name)
             value = float(values[leaf])
-            conditions.append(f"{name} {value:.4f} of {float(threshold):.4f}")
+            conditions.append({"name": name, "value": value, "threshold": float(threshold)})
             own = own or value >= threshold
             beside = beside or bool(links.size and (values[links] >= threshold).any())
-        cell_x = dem.x_min + (column + 0.5) * self.cell
-        cell_y = dem.y_min + self.rows * self.cell - (row + 0.5) * self.cell
-        bed = float(flood.z[leaf]) + self.lowest
-        speed = math.hypot(u, v)
-        place = self._place(leaf, side)
-        lines = [f"Cell {column}, {row} · x {cell_x:.1f} · y {cell_y:.1f}",
-                 f"Leaf: {place['size']:.2f} m",
-                 f"Water: {h:.3f} m deep · surface {bed + h:.2f} m · speed {speed:.3f} m/s · |q| {speed * h:.4f} m²/s"]
+        centre = (self.y_min + self.rows * self.cell - (row + 0.5) * self.cell, self.x_min + (column + 0.5) * self.cell)
+        raster = self.bed[row, column]
+        out.update(self._place(leaf, side))
+        out.update(inside=True, cell_x=centre[1], cell_y=centre[0], cell=self.cell, level=int(tree.level[leaf]),
+                   bed=float(flood.z[leaf]) + self.lowest,
+                   raster_bed=None if math.isnan(raster) else float(raster) + self.lowest,
+                   neighbour_low=float(beds.min()) + self.lowest if beds.size else None,
+                   neighbour_high=float(beds.max()) + self.lowest if beds.size else None,
+                   depth=h, speed=math.hypot(u, v), discharge=math.hypot(u, v) * h, conditions=conditions,
+                   refining=self._why_size(int(tree.level[leaf]), int(self._split_flags()[leaf]), own, beside))
         if not self.graph and self.time_step == "cfl":
             if self.scheme == "fusw":
                 rate = (max(abs(u), abs(v)) + math.sqrt(GRAVITY * max(h, 0.0))) / (side * self.cell)
@@ -1193,20 +1261,8 @@ class QuadtreeFloodRun(Runner):
                 if links.size:
                     rate = (math.sqrt(GRAVITY * max(h, float(flood.h[links].max()), 0.0))
                             / (min(side, int(sides[links].min())) * self.cell))
-            if rate > 0.0:
-                lines.append(f"Time step: this leaf allows {float(flood.sw.cfl.read()) / rate:.3f} s; "
-                             f"the flood is at {flood.dt:.3f} s")
-        lines += ["", "Size: " + self._why_size(int(tree.level[leaf]), int(self._split_flags()[leaf]), own, beside)]
-        if conditions:
-            lines.append(" · ".join(conditions))
-        lines += ["", f"Bed of the leaf: {bed:.2f} m"]
-        raster = self.bed[row, column]
-        if not math.isnan(raster):
-            lines.append(f"Bed of this cell: {float(raster) + self.lowest:.2f} m")
-        if beds.size:
-            lines.append(f"Leaves next to it: {float(beds.min()) + self.lowest:.2f} to "
-                         f"{float(beds.max()) + self.lowest:.2f} m")
-        return {"text": "\n".join(lines), "at": [cell_x, cell_y]}
+            out.update(allowed=float(flood.cfl.read()) / rate if rate > 0.0 else None, dt=flood.dt)
+        return out
 
     def _why_size(self, level, flag, own, beside):
         """Why a leaf is the size it is, and what comes next for it."""

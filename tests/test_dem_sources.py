@@ -40,7 +40,7 @@ def test_plan_in_target_crs():
 def test_ladder_and_overviews():
     assert ds._rung("lidarhd_mnt", 0.5) == 0.5
     assert ds._rung("lidarhd_mnt", 3.0) == 2.0
-    assert ds._rung("ign_rgealti", 0.2) == 1.0  # never finer than the source
+    assert ds._rung("ign_rgealti", 0.2) == 5.0  # never finer than the source
     assert ds._rung("ign_rgealti", 30.0) == 25.0
     assert ds._read_metres("sentinel2_l2a", 10.0) == 10.0
     assert ds._read_metres("sentinel2_l2a", 45.0) == 40.0

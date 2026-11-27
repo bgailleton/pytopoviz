@@ -35,7 +35,8 @@ import numpy as np
 
 from ..core import PROCESSES, Output, Param, Port, Runner, process, run_once, runner
 from ..core.runner import RUNNERS
-from .pyfastflow import _MM_PER_H, _field, _like, _metric_cell_size, _source_cells
+from .pyfastflow import (_MM_PER_H, _csv_series, _field, _like, _metric_cell_size, _num,
+                         _series_text, _source_cells)
 
 #: Solver key -> (label, process id, params set for it).
 SOLVERS = {
@@ -44,14 +45,34 @@ SOLVERS = {
     "graphflood_transient": ("GraphFlood: transient", "pyfastflow.graphflood", {"solver": "transient"}),
     "graphflood_particle": ("GraphFlood: particles", "pyfastflow.graphflood_particle", {}),
     "inertial": ("Inertial (local inertia)", "pyfastflow.inertial_flood", {}),
-    "fusw": ("FullSWOF (shallow water)", "pyfastflow.fusw_flood", {}),
+    "fusw": ("FullSWOF GPU transient", "pyfastflow.fusw_flood",
+             {"time_stepping": "global", "tiles": False}),
     "quadtree": ("Quadtree (adaptive)", "pyfastflow.quadtree_flood", {}),
     "quick": ("Quick flood", "pyfastflow.quadtree_flood", {
         "scheme": "inertial", "levels": 7, "refine": "interval", "refine_unit": "steps",
         "refine_every": 6500.0, "manning": 0.033, "time_step": "cfl", "cfl": 0.4, "dt_max": 30.0,
         "refine_on_h": True, "h_above": 0.05, "refine_on_q": True, "q_above": 0.02,
         "hold_steps": 1000.0, "hold_change": 1.0, "hold_longest": 5.0, "duration": 0.0}),
+    # Steady state: local time steps and active tiles, constant forcing.
+    "fusw_steady": ("FullSWOF GPU steady state", "pyfastflow.fusw_flood", {
+        "time_stepping": "local", "tiles": True, "tile_size": 16, "tile_change": "rate",
+        "infiltration": "none", "inflow_over_time": "constant", "source_hydrographs": "",
+        "source_series": "", "rain_series": "", "inflow_series": "", "series_interp": "step",
+        "advance_by": "steps", "report_every": 0.0, "time_step": "cfl", "inflow_csv": "",
+        "inflow_csv_q": "total"}),
 }
+#: The solver dropdown's order (SOLVERS' order sets the members' prefixes).
+ORDER = ["fusw", "fusw_steady", "inertial", "quadtree", "quick", "graphflood_relax",
+         "graphflood_vanilla", "graphflood_transient", "graphflood_particle"]
+#: Solvers taking a rain factor over time (the rain time series).
+RAIN_SERIES_SOLVERS = ["inertial", "fusw", "quadtree"]
+#: What "Update every" counts per solver (None: the update_by choice).
+UPDATE_UNIT = {"graphflood_relax": "steps", "graphflood_vanilla": "steps",
+               "graphflood_transient": "steps", "graphflood_particle": "steps",
+               "inertial": "model_time", "fusw": None, "fusw_steady": "steps",
+               "quadtree": "wall_time", "quick": "wall_time"}
+#: Solvers with an end time (model time).
+END_SOLVERS = ["inertial", "fusw", "quadtree", "quick"]
 #: Quick flood: the quadtree params it shows; the others are its set values or the defaults.
 QUICK_SHOWN = ("rainfall", "hold")
 #: Process id -> prefix of its params that differ from the other solvers'.
@@ -61,7 +82,8 @@ PREFIX = {"pyfastflow.graphflood": "gf", "pyfastflow.graphflood_particle": "gfp"
 #: Members the flood sets itself, per process: the rain and source fields,
 #: GraphFlood's solver, the continuation states (the runner continues).
 SET_HERE = {"precipitation_field", "source_field", "previous_state", "return_state", "state",
-            "field_scale"}
+            "field_scale", "duration", "steps", "launches", "chunk_seconds", "end_time",
+            "advance_by"}
 #: Shared whatever their defaults (the first solver's default and doc are kept).
 #: Others are shared only when alike and fixed at opening by all their solvers
 #: or by none (else changing one would reopen a solver that takes it live).
@@ -70,13 +92,22 @@ SHARED = {"rainfall"}
 #: modes are one process).
 _RELAX_ONLY = {"analytical_relaxation", "analytical_solver", "warmup_steps", "warmup_relaxation",
                "depth_cap"}
+_TILE_PARAMS = {"tile_tau", "tile_check", "tile_window", "tile_size", "tile_change",
+                "local_dt_ratio"}
+_GREEN_AMPT = {"ks", "kc", "dtheta", "psi", "zcrust", "imax", "ie_ca", "return_infiltrated"}
 UNUSED = {
+    "fusw": _TILE_PARAMS,
+    "fusw_steady": _GREEN_AMPT | {f"{n}_field" for n in ("ks", "kc", "dtheta", "psi", "zcrust",
+                                                          "imax")}
+                   | {"dt", "tile_window", "inflow_csv", "inflow_csv_q"},
     "graphflood_relax": {"dt"},
     "graphflood_vanilla": _RELAX_ONLY,
     "graphflood_transient": _RELAX_ONLY | {"local_minima", "carve_slope_min"},
 }
 _CONVERGED = {n: {"stop": ["converged"]} for n in (
     "convergence_tol", "convergence_window", "convergence_eps")}
+_RAIN_SERIES = {"rain_series": {"rain_over_time": ["factor"]},
+                "series_interp": {"rain_over_time": ["factor", "csv"]}}
 #: Process id -> {param: {its param: [values]}}: read only when that param
 #: has one of the values (added to the show_if when every solver of the
 #: flood's param agrees).
@@ -85,15 +116,22 @@ WHEN = {
     "pyfastflow.graphflood_particle": _CONVERGED,
     "pyfastflow.inertial_flood": {"dt": {"time_step": ["fixed"]},
                                   "dt_max": {"time_step": ["auto"]},
-                                  "cfl": {"time_step": ["auto"]}},
+                                  "cfl": {"time_step": ["auto"]},
+                                  "storm_duration": {"rain_over_time": ["factor", "csv"]},
+                                  **_RAIN_SERIES},
     "pyfastflow.fusw_flood": {"dt": {"time_step": ["fixed"]},
                               "dt_max": {"time_step": ["cfl"]},
                               "cfl": {"time_step": ["cfl"]},
                               "limiter": {"order": [2]},
                               "max_restarts": {"order": [2]},
+                              "source_series": {"inflow_over_time": ["factor"]},
+                              "inflow_csv": {"inflow_over_time": ["csv"]},
+                              "inflow_csv_q": {"inflow_over_time": ["csv"]},
+                              **_RAIN_SERIES,
                               "friction_coefficient": {
                                   "friction": ["manning", "darcy_weisbach", "laminar"]}},
     "pyfastflow.quadtree_flood": {
+        **_RAIN_SERIES,
         "dt": {"scheme": ["inertial", "fusw"], "time_step": ["fixed"]},
         "dt_max": {"scheme": ["inertial", "fusw"], "time_step": ["cfl"]},
         "cfl": {"scheme": ["inertial"], "time_step": ["cfl"]},
@@ -107,31 +145,35 @@ WHEN = {
 SPLIT = {"dt_max", "limiter"}
 
 _RAIN_MODES = ["uniform", "map", "map_rate"]
+_RAIN_OVER_TIME = ["constant", "factor", "csv"]
+_UPDATE_UNITS = ["model_time", "steps", "wall_time"]
+#: Solvers counting each unit (fusw: any, by its update_by row).
+_UNIT_SOLVERS = {u: [k for k in ORDER if UPDATE_UNIT[k] in (u, None)] for u in _UPDATE_UNITS}
 _SOURCE_UNITS = ["mm_h", "m3s_cell"]
 
 _GROUPS = {
-    "start": ("h_init",),
-    "sources": ("sources",),
-    "rain": ("rainfall", "rain_series", "series_interp", "storm_duration", "inflow_series",
-             "source_series"),
+    "sources": ("sources", "inflow_over_time", "source_series", "inflow_csv", "inflow_csv_q",
+                "source_hydrographs"),
+    "rain": ("rain_over_time", "rainfall", "rain_series", "rain_csv", "series_interp",
+             "storm_duration"),
     "friction": ("manning", "friction", "friction_coefficient", "friction_exponent",
                  "manning_field", "friction_field"),
     "infiltration": ("infiltration", "ks", "kc", "dtheta", "psi", "zcrust", "imax", "ie_ca",
                      "ks_field", "kc_field", "dtheta_field", "psi_field", "zcrust_field",
                      "imax_field"),
-    "run": ("steps", "launches", "duration", "chunk_seconds"),
-    "convergence": ("stop", "check_every", "convergence_metric", "convergence_tol",
+    "run": ("update_by", "update_every_model", "update_every_wall", "update_every_steps",
+            "end_time", "stop", "check_every", "convergence_metric", "convergence_tol",
                     "convergence_window", "convergence_eps", "convergence_percentile",
                     "convergence_memory", "tol", "iterations_per_check", "window", "eps"),
     "time": ("time_step", "dt", "dt_max", "cfl", "fusw_cfl", "dt_update_steps", "dt_curve",
              "dt_curve_x", "dt_curve_ramp", "max_restarts", "check_steps"),
-    "start": ("initial_water", "warmup_steps", "warmup_relaxation", "depth_cap",
+    "start": ("h_init", "initial_water", "warmup_steps", "warmup_relaxation", "depth_cap",
               "source_percentile"),
     "domain": ("topology", "boundary", "outlet_edges", "nodata_outlets", "local_minima",
                "carve_slope_min", "fix_outlet_depth", "outlet_depth", "boundary_flux",
                "outlet_discharge", "top_inflow", "outlet", "outlet_value", "fusw_outlet",
                "outlet_slope", "outlet_manning", "nodata_boundary", "inflow_discharge",
-               "inflow_slope", "inflow_lines"),
+               "inflow_slope", "inflow_lines", "inflow_series"),
     "particles": ("particles", "h_relaxation", "walk_steps", "spawn_pad", "propagate", "seed",
                   "threads"),
     "refinement": ("levels", "edge_level", "capacity", "bed_rule", "bed_percentile",
@@ -145,6 +187,8 @@ _GROUP_OF = {name: group for group, names in _GROUPS.items() for name in names}
 
 
 def _group(name):
+    if name in _GROUP_OF:
+        return _GROUP_OF[name]
     if name.startswith("return_"):
         return "outputs"
     if name.startswith(("refine_on_", "q_", "h_", "speed_", "u_", "v_")):
@@ -169,7 +213,7 @@ def _members(kind):
                 continue
             if key == "quick" and kind == "params" and m.name not in QUICK_SHOWN:
                 continue
-            if kind == "params" and m.name in UNUSED.get(key, ()):
+            if m.name in UNUSED.get(key, ()):
                 continue
             found.setdefault(m.name, {}).setdefault(pid, ([], m))[0].append(key)
     return found
@@ -221,18 +265,29 @@ def _build():
                                      **hints))
                     when.append((len(out) - 1, name, keys))
     for i, name, keys in when:
+        # A condition on a param a solver fixes is dropped for it when the
+        # fixed value meets it; a solver left with no condition takes the
+        # others' (the host sets that param's hidden row to the fixed value
+        # for this solver: Topos flood_controller.gd FORCED).
         conds = []
         for k in keys:
             raw = WHEN.get(SOLVERS[k][1], {}).get(name)
-            conds.append(None if raw is None or k == "quick" else
-                         {names[k].get(o, o): list(v) for o, v in raw.items()})
-        if conds[0] is not None and all(c == conds[0] for c in conds):
-            params[i] = replace(params[i], show_if={**params[i].show_if, **conds[0]})
+            fixed = SOLVERS[k][2]
+            if raw is None or k == "quick" or any(
+                    o in fixed and fixed[o] not in v for o, v in raw.items()):
+                conds.append(None)
+                continue
+            left = {names[k].get(o, o): list(v) for o, v in raw.items() if o not in fixed}
+            conds.append(left or "met")
+        real = [c for c in conds if c != "met"]
+        if real and real[0] is not None and all(c == real[0] for c in real):
+            params[i] = replace(params[i], show_if={**params[i].show_if, **real[0]})
     return ports, params, outputs, names
 
 
 _PORTS, _PARAMS, _OUTPUTS, _NAMES = _build()
-_ALL = list(SOLVERS)
+_ALL = list(ORDER)
+assert set(_ALL) == set(SOLVERS)
 
 _FLOOD_PORTS = [
     Port("dem", "georaster", label="Topography", group="inputs",
@@ -247,13 +302,44 @@ _FLOOD_PORTS = [
     *[p for p in _PORTS if p.name != "dem"],
 ]
 _FLOOD_PARAMS = [
-    Param("solver", "string", default="inertial", choices=_ALL,
+    Param("solver", "string", default="fusw", choices=_ALL,
           choice_labels=[SOLVERS[k][0] for k in _ALL], group="solver",
           doc="The flood solver; its params show under it. GraphFlood: the steady water depth "
               "for a constant rain (relaxation, explicit, transient steps, or particles). "
               "Inertial and FullSWOF: transient shallow water. Quadtree: inertial, FullSWOF or "
               "GraphFlood on leaves refined where the water is. Quick flood: a quadtree flood "
               "with set settings."),
+    Param("rain_over_time", "string", label="Rain", default="constant", choices=_RAIN_OVER_TIME,
+          choice_labels=["Constant", "Time series: factor over time",
+                         "Time series: CSV file (time, rate)"],
+          group="rain", show_if={"solver": RAIN_SERIES_SOLVERS},
+          doc="Constant: Rainfall all along. Factor over time: Rainfall times a factor "
+              "\"t:factor, ...\" over model time. CSV file: the rate (mm/h) over model time "
+              "read from a file (time in s in the first column, rate in mm/h in the second)."),
+    Param("rain_csv", "path", label="Rain file (CSV)", default="", group="rain",
+          show_if={"solver": RAIN_SERIES_SOLVERS, "rain_over_time": ["csv"]},
+          doc="CSV file: model time (s) in the first column, rain rate (mm/h) in the second; "
+              "a header line allowed."),
+    Param("update_by", "string", label="Update every", default="steps",
+          choices=_UPDATE_UNITS, choice_labels=["Model time (s)", "Steps", "Wall time (s)"],
+          group="run", show_if={"solver": ["fusw"]},
+          doc="What one advance runs before the view is updated: model time, solver steps "
+              "or wall-clock time. GraphFlood and the steady state count steps (particles: "
+              "launches), Inertial model time, Quadtree and Quick flood wall time."),
+    Param("update_every_model", "float", label="Update every", unit="s", default=300.0,
+          min=0.0, group="run", show_if={"solver": _UNIT_SOLVERS["model_time"],
+                                         "update_by": ["model_time"]},
+          doc="Model time (s) simulated between two updates."),
+    Param("update_every_wall", "float", label="Update every", unit="s", default=2.0,
+          min=0.0, group="run", show_if={"solver": _UNIT_SOLVERS["wall_time"],
+                                         "update_by": ["wall_time"]},
+          doc="Wall-clock seconds run between two updates."),
+    Param("update_every_steps", "int", label="Update every (steps)", default=1000, min=1,
+          group="run", show_if={"solver": _UNIT_SOLVERS["steps"], "update_by": ["steps"]},
+          doc="Solver steps (GraphFlood particles: launches) between two updates."),
+    Param("end_time", "float", label="Stop at (0 = never)", unit="s", default=0.0, min=0.0,
+          group="run", show_if={"solver": END_SOLVERS},
+          doc="Model time (s) at which the run ends; 0: it goes on until Pause."),
     Param("rain_mode", "string", default="uniform", choices=_RAIN_MODES,
           choice_labels=["Uniform rate", "Rain map (mm/h)", "Map x rate"], group="rain",
           doc="Uniform: Rainfall everywhere. Rain map: the map's rate per cell. Map x rate: "
@@ -269,13 +355,22 @@ for _p in _FLOOD_PARAMS:
     if _p.name == "rainfall":
         _FLOOD_PARAMS[_FLOOD_PARAMS.index(_p)] = Param(
             "rainfall", "float", unit="mm/h", default=20.0, min=0.0, label="Rainfall",
-            group="rain", show_if={"rain_mode": ["uniform", "map_rate"]},
+            group="rain", show_if={"rain_mode": ["uniform", "map_rate"],
+                                   "rain_over_time": ["constant", "factor"]},
             doc="Rain rate (mm/h); with Map x rate, times the map. Times the rain factor over "
                 "time (transient solvers). Changes while running.")
         break
 
+#: Rows shown first in their sections, in this order (by name after the prefix).
+_FIRST = ["rain_over_time", "rainfall", "rain_series", "rain_csv", "series_interp",
+          "storm_duration", "inflow_over_time", "source_series", "inflow_csv", "inflow_csv_q",
+          "update_by", "update_every_model", "update_every_wall", "update_every_steps",
+          "end_time"]
+_FLOOD_PARAMS.sort(key=lambda q: _FIRST.index(q.name.split("__")[-1])
+                   if q.name.split("__")[-1] in _FIRST else len(_FIRST))
+
 #: Runner config: GraphFlood's and the solvers' params fixed at opening, under the flood's names.
-_CONFIG = ["solver", "rain_mode", "source_map_unit"] + sorted({
+_CONFIG = ["solver", "rain_mode", "source_map_unit", "rain_over_time", "rain_csv"] + sorted({
     names[n] for key, names in _NAMES.items() for n in RUNNERS[SOLVERS[key][1]].config
     if n in names})
 
@@ -323,6 +418,16 @@ class FloodRun(Runner):
             raise ValueError(f"{self.who}: unknown source_map_unit {p['source_map_unit']!r}")
         self.key, (_l, self.pid, self.fixed) = key, SOLVERS[key]
         self.mode = p["rain_mode"]
+        if p["rain_over_time"] not in _RAIN_OVER_TIME:
+            raise ValueError(f"{self.who}: unknown rain_over_time {p['rain_over_time']!r}")
+        self.rain_time = p["rain_over_time"] if key in RAIN_SERIES_SOLVERS else "constant"
+        self.rain_csv = None
+        if self.rain_time == "csv":
+            if self.mode == "map":
+                raise ValueError(f"{self.who}: a rain rate from a CSV file needs the uniform "
+                                 "or the map x rate rain")
+            self.rain_csv = _series_text(*_csv_series(p["rain_csv"], "rain", self.who))
+        self.end_now = 0.0
         self.dem = inputs["dem"]
         self.valid = self.dem.valid
         self.cell = _metric_cell_size(self.dem, self.who)
@@ -349,17 +454,54 @@ class FloodRun(Runner):
             if flood_name in p and name in out:
                 out[name] = p[flood_name]
         out.update(self.fixed)
+        if "rain_series" in out and self.key not in ("fusw_steady",):
+            if self.rain_time == "constant":
+                out["rain_series"] = ""
+            elif self.rain_time == "csv":
+                out["rain_series"], out["rainfall"] = self.rain_csv, 1.0
+        self._update(p, out)
         if "field_scale" in out:
             out["field_scale"] = 1.0  # the maps are scaled here
         if self.mode != "uniform" and self.pid == "pyfastflow.quadtree_flood":
             out["rainfall"] = 0.0  # the map holds the rain
         return out
 
+    def _update(self, p, out):
+        """The solver's advance from Update every and Stop at."""
+        unit = UPDATE_UNIT[self.key] or p["update_by"]
+        if unit not in _UPDATE_UNITS:
+            raise ValueError(f"{self.who}: unknown update_by {unit!r}")
+        model, wall = float(p["update_every_model"]), float(p["update_every_wall"])
+        steps = int(p["update_every_steps"])
+        end = float(p["end_time"]) if self.key in END_SOLVERS else 0.0
+        self.end_now = end
+        if self.pid == "pyfastflow.graphflood":
+            out["steps"] = steps
+        elif self.pid == "pyfastflow.graphflood_particle":
+            out["launches"] = steps
+        elif self.pid == "pyfastflow.inertial_flood":
+            if end > 0.0 and hasattr(self, "inner"):
+                left = end - float(self.inner.coordinate().get("time", 0.0))
+                if left <= 1e-9 * max(end, 1.0):
+                    raise ValueError(f"{self.who}: the run reached its end time "
+                                     f"({_num(end, 's')}); raise Stop at or Reset")
+                model = min(model, left)
+            out["duration"] = model
+        elif self.pid == "pyfastflow.fusw_flood":
+            out.update(advance_by=unit, duration=model, steps=steps, chunk_seconds=wall,
+                       end_time=end)
+        elif self.pid == "pyfastflow.quadtree_flood":
+            out.update(chunk_seconds=wall, duration=end)
+
+    def _rainfall(self, p):
+        """The rain rate the solver is given (mm/h): 1 when a CSV file holds it."""
+        return 1.0 if self.rain_time == "csv" else float(p["rainfall"])
+
     def _rain_raster(self, p):
         """(key, GeoRaster in mm/h or None) of the rain map for this mode and rate."""
         if self.mode == "uniform":
             return (None, None)
-        rate = float(p["rainfall"]) if self.mode == "map_rate" else 1.0
+        rate = self._rainfall(p) if self.mode == "map_rate" else 1.0
         z = np.maximum(np.nan_to_num(_field(self.rain_map, 0.0, self.valid.shape, "rain_map",
                                             self.who), nan=0.0), 0.0) * rate
         return (rate, _like(self.dem, z))
@@ -406,7 +548,11 @@ class FloodRun(Runner):
         return self.inner.coordinate()
 
     def status(self):
-        return self.inner.status()
+        out = dict(self.inner.status())
+        if self.pid == "pyfastflow.inertial_flood" and self.end_now > 0.0:
+            t = float(self.inner.coordinate().get("time", 0.0))
+            out["stopped"] = out.get("stopped", False) or t >= self.end_now * (1.0 - 1e-9)
+        return out
 
     def close(self):
         self.inner.close()

@@ -105,21 +105,6 @@ def test_saleve_noise_stack_fields():
         PROCESSES.get("pyfastflow.saleve_steady")(n=64, uplift_noise='[{"type": "foo"}]')
 
 
-def test_saleve_multiscale_erosion_post_process():
-    _gpu()
-    run = PROCESSES.get("pyfastflow.saleve_steady")
-    base = dict(n=64, dx=50.0, uplift_noise="[]", erodibility_noise="[]", return_fields=True)
-    out = run(**base, mse_stages=2)
-    z = out["grid"].z
-    # Stage 2 doubles the vertices over the same extent.
-    assert z.shape == (128, 128)
-    assert np.isfinite(z).all()
-    assert out["grid"].cell_size == pytest.approx(50.0 * 63 / 127)
-    assert out["uplift_field"].z.shape == (128, 128)
-    with pytest.raises(ValueError):
-        run(**base, mse_stages=9)
-
-
 def _flood_dem(nodata=False):
     rng = np.random.default_rng(1)
     z = rng.random((48, 64)) * 0.5 + np.linspace(20.0, 0.0, 48)[:, None]

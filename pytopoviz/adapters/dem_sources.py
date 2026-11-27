@@ -20,7 +20,7 @@ licence, coverage; ``nc`` marks non-commercial licences). Kinds:
   sizes share their tiles.
 
 All tiles of a source are pasted on the source's own lattice, then warped
-once into the output grid (bilinear, or average when the cell is coarser;
+once into the output grid (cubic, or average when the cell is coarser;
 nearest / mode for classes). ``plan_download`` (the process's ``describe``)
 reports the grid, the requests and an estimate of the bytes read, without
 network.
@@ -76,7 +76,7 @@ _IGN = "IGN Géoplateforme, Licence Ouverte Etalab 2.0"
 _FRANCE = (-5.5, 41.0, 10.0, 51.5)
 
 # Per source: label, kind, licence, nc (non-commercial), coverage (lon/lat
-# west, south, east, north; None: world), cell (default output, m), native (m),
+# west, south, east, north; None: world), cell (default output, m: the native one), native (m),
 # overviews (factors of the native read), bpp (bytes read per native pixel, for
 # the estimate), classes (categorical), and the kind's own keys.
 SOURCES = {
@@ -112,7 +112,7 @@ SOURCES = {
                    "only. Each 1° tile is copied whole from its 10° zip once.",
     },
     "terrain_tiles": {
-        "label": "Terrain Tiles, land and bathymetry", "kind": "terrarium", "cell": 100.0, "native": 5.0,
+        "label": "Terrain Tiles, land and bathymetry", "kind": "terrarium", "cell": 5.0, "native": 5.0,
         "max_zoom": 15, "bpp": 1.5, "coverage": None,
         "licence": "AWS Terrain Tiles (Mapzen/Joerd): SRTM, GMTED2010, ETOPO1, GEBCO and national datasets; "
                    "attribution per its source list (github.com/tilezen/joerd).",
@@ -142,45 +142,45 @@ SOURCES = {
         "licence": "REMA v2.0, Polar Geospatial Center (University of Minnesota), from Maxar imagery; CC BY 4.0.",
     },
     "ign_rgealti": {
-        "label": "IGN RGE ALTI (1 m)", "kind": "wms_bil", "cell": 5.0, "native": 1.0, "bpp": 4.0,
+        "label": "IGN RGE ALTI (~5 m online)", "kind": "wms_bil", "cell": 5.0, "native": 5.0, "bpp": 4.0,
         "epsg": 2154, "layer": "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES", "tile": 1024, "coverage": _FRANCE,
         "licence": _IGN,
     },
     "lidarhd_mnt": {
-        "label": "IGN LiDAR HD terrain, MNT (50 cm)", "kind": "wms_bil", "cell": 1.0, "native": 0.5, "bpp": 4.0,
+        "label": "IGN LiDAR HD terrain, MNT (50 cm)", "kind": "wms_bil", "cell": 0.5, "native": 0.5, "bpp": 4.0,
         "epsg": 2154, "layer": "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93", "tile": 1024,
         "coverage": _FRANCE, "licence": _IGN + "; only where LiDAR HD is published.",
     },
     "lidarhd_mns": {
-        "label": "IGN LiDAR HD surface, MNS (50 cm)", "kind": "wms_bil", "cell": 1.0, "native": 0.5, "bpp": 4.0,
+        "label": "IGN LiDAR HD surface, MNS (50 cm)", "kind": "wms_bil", "cell": 0.5, "native": 0.5, "bpp": 4.0,
         "epsg": 2154, "layer": "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93", "tile": 1024,
         "coverage": _FRANCE, "licence": _IGN + "; only where LiDAR HD is published.",
     },
     "lidarhd_mnh": {
-        "label": "IGN LiDAR HD canopy height, MNH (50 cm)", "kind": "wms_bil", "cell": 1.0, "native": 0.5,
+        "label": "IGN LiDAR HD canopy height, MNH (50 cm)", "kind": "wms_bil", "cell": 0.5, "native": 0.5,
         "bpp": 4.0, "epsg": 2154, "layer": "IGNF_LIDAR-HD_MNH_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
         "tile": 1024, "coverage": _FRANCE, "licence": _IGN + "; only where LiDAR HD is published.",
     },
     "swissalti3d": {
-        "label": "swissALTI3D (0.5 / 2 m)", "kind": "cog", "cell": 2.0, "native": 0.5, "overviews": (1, 4),
+        "label": "swissALTI3D (0.5 / 2 m)", "kind": "cog", "cell": 0.5, "native": 0.5, "overviews": (1, 4),
         "bpp": 2.0, "epsg": 2056, "coverage": (5.9, 45.8, 10.5, 47.9),
         "licence": "swissALTI3D © swisstopo, open government data: free use with the attribution "
                    "\"Source: Federal Office of Topography swisstopo\".",
     },
     "ahn4_dtm": {
-        "label": "AHN4 terrain, DTM (50 cm)", "kind": "wcs", "cell": 1.0, "native": 0.5, "bpp": 4.0,
+        "label": "AHN4 terrain, DTM (50 cm)", "kind": "wcs", "cell": 0.5, "native": 0.5, "bpp": 4.0,
         "epsg": 28992, "tile": 1000, "url": "https://service.pdok.nl/rws/ahn/wcs/v1_0", "coverage_id": "dtm_05m",
         "axes": ("x", "y"), "scale_axes": ("x", "y"), "coverage": (3.2, 50.7, 7.3, 53.6),
         "licence": "AHN4 (Actueel Hoogtebestand Nederland), Rijkswaterstaat / PDOK, CC0 1.0.",
     },
     "ahn4_dsm": {
-        "label": "AHN4 surface, DSM (50 cm)", "kind": "wcs", "cell": 1.0, "native": 0.5, "bpp": 4.0,
+        "label": "AHN4 surface, DSM (50 cm)", "kind": "wcs", "cell": 0.5, "native": 0.5, "bpp": 4.0,
         "epsg": 28992, "tile": 1000, "url": "https://service.pdok.nl/rws/ahn/wcs/v1_0", "coverage_id": "dsm_05m",
         "axes": ("x", "y"), "scale_axes": ("x", "y"), "coverage": (3.2, 50.7, 7.3, 53.6),
         "licence": "AHN4 (Actueel Hoogtebestand Nederland), Rijkswaterstaat / PDOK, CC0 1.0.",
     },
     "ea_dtm": {
-        "label": "England LIDAR composite DTM (1 m)", "kind": "wcs", "cell": 2.0, "native": 1.0, "bpp": 4.0,
+        "label": "England LIDAR composite DTM (1 m)", "kind": "wcs", "cell": 1.0, "native": 1.0, "bpp": 4.0,
         "epsg": 27700, "tile": 1000,
         "url": "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs",
         "coverage_id": "13787b9a-26a4-4775-8523-806d13af58fc__Lidar_Composite_Elevation_DTM_1m",
@@ -195,7 +195,7 @@ SOURCES = {
         "licence": "MDT05 © Instituto Geográfico Nacional / CNIG (PNOA), CC BY 4.0.",
     },
     "usgs_3dep": {
-        "label": "USGS 3DEP (1 m where flown, else 1/3″)", "kind": "arcgis", "cell": 10.0, "native": 1.0,
+        "label": "USGS 3DEP (1 m where flown, else 1/3″)", "kind": "arcgis", "cell": 1.0, "native": 1.0,
         "bpp": 4.0, "epsg": 4326, "tile": 1000,
         "url": "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage",
         "coverage": (-180.0, 17.5, -64.0, 72.0),
@@ -703,7 +703,7 @@ def _read_terrarium(source, read, cell, cache, hrefs=None):
         base, base_t = _terrarium_mosaic(read, _BATHY_ZOOM, cache, total - _terrarium_count(read, _BATHY_ZOOM), total)
         under = np.full(mosaic.shape, np.nan, np.float32)
         reproject(base, under, src_transform=base_t, src_crs=merc, dst_transform=transform, dst_crs=merc,
-                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.bilinear)
+                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.cubic)
         sea = (mosaic == 0.0) & (under < 0.0)
         mosaic[sea] = under[sea]
     return [(mosaic, transform, merc)]
@@ -777,7 +777,7 @@ def _service_tile(source, step, size, ix, iy, cache):
                 data[np.abs(data) > 1e30] = np.nan
                 reproject(data, a, src_transform=ds.transform, src_crs=ds.crs or CRS.from_epsg(src["epsg"]),
                           dst_transform=Affine(step, 0.0, left, 0.0, -step, top), dst_crs=CRS.from_epsg(src["epsg"]),
-                          src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.nearest)
+                          src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.cubic)
         elif body is not None:
             raise ValueError("%s: %s" % (src["label"], body[:300].decode("utf-8", "replace")))
     _save(path, a.astype(np.float32))
@@ -808,9 +808,10 @@ _READERS = {"cog": _read_cog, "skadi": _read_skadi, "terrarium": _read_terrarium
             "wms_bil": _read_service, "wcs": _read_service, "arcgis": _read_service}
 
 
-def _paste(pieces):
+def _paste(pieces, classes=False):
     """The pieces of one source pasted on one lattice (the first piece's pixel
-    grid, the finest resolution): (z, transform, crs)."""
+    grid, the finest resolution): (z, transform, crs). Cubic, nearest for
+    ``classes``."""
     crs = pieces[0][2]
     d = min(abs(p[1].a) for p in pieces)
     t0 = pieces[0][1]
@@ -832,7 +833,7 @@ def _paste(pieces):
     z = np.full((ny, nx), np.nan, np.float32)
     for a, t, c in pieces:
         reproject(a, z, src_transform=t, src_crs=c, dst_transform=transform, dst_crs=crs,
-                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.nearest, init_dest_nodata=False)
+                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.nearest if classes else Resampling.cubic, init_dest_nodata=False)
     return z, transform, crs
 
 
@@ -851,13 +852,13 @@ def fetch_grid(source="copernicus30", west=0.0, south=0.0, east=0.0, north=0.0, 
         pieces = _READERS[src["kind"]](source, read, cell, cache, hrefs)
     if not pieces:
         raise ValueError("no %s data in this box" % src["label"])
-    z, transform, src_crs = _paste(pieces)
+    z, transform, src_crs = _paste(pieces, bool(src.get("classes")))
     read_m = abs(transform.a) * (DEG if src_crs.is_geographic else 1.0)
     coarser = cell > 1.5 * read_m
     if src.get("classes"):
         resampling = Resampling.mode if coarser else Resampling.nearest
     else:
-        resampling = Resampling.average if coarser else Resampling.bilinear
+        resampling = Resampling.average if coarser else Resampling.cubic
     out = np.full((n_rows, n_cols), np.nan, dtype=np.float32)
     progress.report(0, 0, "reprojecting")
     reproject(z, out, src_transform=transform, src_crs=src_crs,
